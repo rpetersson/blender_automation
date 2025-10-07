@@ -201,6 +201,13 @@ run_blender() {
         return $?
     fi
     
+    # Validate that we have something to render
+    if [[ -z "$BLENDER_FILE" && -z "$BLENDER_SCRIPT" ]]; then
+        error "Either BLENDER_FILE or BLENDER_SCRIPT must be specified"
+        info "Use -f to specify a .blend file or -s to specify a Python script"
+        exit 1
+    fi
+    
     local blender_cmd="cd $REMOTE_WORK_DIR && snap run blender -b"
     
     # Add blend file if specified
