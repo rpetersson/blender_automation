@@ -243,6 +243,9 @@ run_blender() {
     # Add output settings
     blender_cmd="$blender_cmd -o output/render_#### -F $OUTPUT_FORMAT"
     
+    # Force CUDA GPU rendering
+    blender_cmd="$blender_cmd -- --cycles-device CUDA"
+    
     # Add animation flag (only if rendering multiple frames)
     if [[ "$FRAME_END" -gt "$FRAME_START" ]]; then
         blender_cmd="$blender_cmd -a"

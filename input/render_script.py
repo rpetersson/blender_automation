@@ -1,41 +1,50 @@
 import bpy
 
-# Clear existing mesh objects
-bpy.ops.object.select_all(action='SELECT')
-bpy.ops.object.delete(use_global=False, confirm=False)
+print("=" * 60)
+print("Blender CUDA Rendering Script")
+print("=" * 60)
 
 # Configure Cycles render engine first
 scene = bpy.context.scene
 scene.render.engine = 'CYCLES'
 
-# Try to configure CUDA (but don't fail if it's not available)
-try:
-    prefs = bpy.context.preferences
-    cycles_prefs = prefs.addons['cycles'].preferences
-    
-    # Check if CUDA is available
-    cycles_prefs.refresh_devices()
-    cuda_devices = [device for device in cycles_prefs.devices if device.type == 'CUDA']
-    
-    if cuda_devices:
-        print(f"Found {len(cuda_devices)} CUDA device(s)")
-        cycles_prefs.compute_device_type = 'CUDA'
+# Configure CUDA - More aggressive approach
+print("\nConfiguring CUDA...")
+prefs = bpy.context.preferences
+cycles_prefs = prefs.addons['cycles'].preferences
+
+# Try different compute device types in order of preference
+device_type_found = False
+for device_type in ['CUDA', 'OPTIX', 'OPENCL']:
+    try:
+        cycles_prefs.compute_device_type = device_type
+        cycles_prefs.refresh_devices()
         
-        # Enable CUDA devices
-        for device in cuda_devices:
-            device.use = True
-            print(f"Enabled CUDA device: {device.name}")
-        
-        scene.cycles.device = 'GPU'
-        print("CUDA acceleration enabled")
-    else:
-        print("No CUDA devices found, using CPU")
-        scene.cycles.device = 'CPU'
-        
-except Exception as e:
-    print(f"CUDA setup failed: {e}")
-    print("Falling back to CPU rendering")
+        # Check if this device type has any devices
+        available_devices = [d for d in cycles_prefs.devices if d.type == device_type]
+        if available_devices:
+            print(f"✓ Found {len(available_devices)} {device_type} device(s)")
+            
+            # Enable all devices of this type
+            for device in available_devices:
+                device.use = True
+                print(f"  - Enabled: {device.name}")
+            
+            device_type_found = True
+            break
+    except Exception as e:
+        print(f"✗ {device_type} not available: {e}")
+
+if device_type_found:
+    scene.cycles.device = 'GPU'
+    print(f"✓ GPU rendering enabled with {cycles_prefs.compute_device_type}")
+else:
+    print("✗ No GPU devices found, using CPU")
     scene.cycles.device = 'CPU'
+
+# Clear existing mesh objects
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.object.delete(use_global=False, confirm=False)
 
 # Create a simple scene with a cube
 bpy.ops.mesh.primitive_cube_add(location=(0, 0, 0))
