@@ -1,4 +1,5 @@
 import bpy
+import sys
 
 print("=" * 60)
 print("Blender CUDA Rendering Script")
@@ -9,38 +10,57 @@ scene = bpy.context.scene
 scene.render.engine = 'CYCLES'
 
 # Configure CUDA - More aggressive approach
-print("\nConfiguring CUDA...")
+print("\nConfiguring GPU/CUDA...")
 prefs = bpy.context.preferences
 cycles_prefs = prefs.addons['cycles'].preferences
 
+# Show current preferences
+print(f"Current compute device type: {cycles_prefs.compute_device_type}")
+
 # Try different compute device types in order of preference
 device_type_found = False
-for device_type in ['CUDA', 'OPTIX', 'OPENCL']:
+selected_device_type = None
+
+for device_type in ['CUDA', 'OPTIX', 'OPENCL', 'HIP']:
     try:
+        print(f"\nTrying {device_type}...")
         cycles_prefs.compute_device_type = device_type
         cycles_prefs.refresh_devices()
+        
+        # List ALL devices
+        print(f"  Total devices found: {len(cycles_prefs.devices)}")
+        for i, device in enumerate(cycles_prefs.devices):
+            print(f"    [{i}] {device.name} (Type: {device.type}, Use: {device.use})")
         
         # Check if this device type has any devices
         available_devices = [d for d in cycles_prefs.devices if d.type == device_type]
         if available_devices:
-            print(f"✓ Found {len(available_devices)} {device_type} device(s)")
+            print(f"  ✓ Found {len(available_devices)} {device_type} device(s)")
             
             # Enable all devices of this type
             for device in available_devices:
                 device.use = True
-                print(f"  - Enabled: {device.name}")
+                print(f"    ✓ Enabled: {device.name}")
             
             device_type_found = True
+            selected_device_type = device_type
             break
+        else:
+            print(f"  ✗ No {device_type} devices available")
     except Exception as e:
-        print(f"✗ {device_type} not available: {e}")
+        print(f"  ✗ {device_type} error: {e}")
 
 if device_type_found:
     scene.cycles.device = 'GPU'
-    print(f"✓ GPU rendering enabled with {cycles_prefs.compute_device_type}")
+    print(f"\n✓ GPU rendering enabled with {selected_device_type}")
 else:
-    print("✗ No GPU devices found, using CPU")
+    print("\n✗ No GPU devices found, using CPU")
     scene.cycles.device = 'CPU'
+    print("\nPossible reasons:")
+    print("  1. NVIDIA drivers not installed on VM")
+    print("  2. Blender not compiled with CUDA support")
+    print("  3. VM doesn't have an NVIDIA GPU")
+    print("  4. Snap confinement preventing GPU access")
 
 # Clear existing mesh objects
 bpy.ops.object.select_all(action='SELECT')
