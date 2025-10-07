@@ -346,17 +346,20 @@ run_blender() {
     # Force OPTIX GPU rendering
     blender_cmd="$blender_cmd -- --cycles-device OPTIX"
     
-    # Add animation flag (only if rendering multiple frames)
-    if [[ "$FRAME_END" -gt "$FRAME_START" ]]; then
+    # Add animation flag only if rendering multiple frames AND we have a blend file
+    # Python scripts that call bpy.ops.render.render() don't need -a flag
+    if [[ "$FRAME_END" -gt "$FRAME_START" ]] && [[ -n "$BLENDER_FILE" ]]; then
         blender_cmd="$blender_cmd -a"
     fi
     
     info "Executing: $blender_cmd"
     
-    ssh_execute "$blender_cmd" || {
+    # Execute and capture output
+    if ! ssh_execute "$blender_cmd"; then
         error "Blender execution failed"
+        error "Check the output above for details"
         exit 1
-    }
+    fi
     
     log "Blender execution completed"
 }
