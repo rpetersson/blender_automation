@@ -240,6 +240,9 @@ run_blender() {
     # Add output settings
     blender_cmd="$blender_cmd -o output/render_#### -F $OUTPUT_FORMAT"
     
+    # Add CUDA GPU acceleration
+    blender_cmd="$blender_cmd -E CYCLES -- --cycles-device CUDA"
+    
     # Add animation flag
     blender_cmd="$blender_cmd -a"
     
