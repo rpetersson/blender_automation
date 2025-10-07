@@ -268,20 +268,42 @@ run_blender() {
         exit 1
     fi
     
-    # Detect which Blender to use (system or snap)
+    # Determine which Blender to use based on installation method
     local blender_exec="blender"
-    if ! ssh_execute "command -v blender" 2>/dev/null; then
-        # System blender not found, try snap
-        if ssh_execute "snap list blender" 2>/dev/null | grep -q "blender"; then
-            blender_exec="snap run blender"
-            log "Using snap Blender"
-        else
-            error "Blender not found on VM"
+    case "${BLENDER_INSTALL_METHOD:-snap}" in
+        snap)
+            if ssh_execute "snap list blender" 2>/dev/null | grep -q "blender"; then
+                blender_exec="snap run blender"
+                log "Using snap Blender (as configured)"
+            else
+                error "Snap Blender not found on VM. Run installation first."
+                exit 1
+            fi
+            ;;
+        official)
+            if ssh_execute "test -x /opt/blender/blender" 2>/dev/null; then
+                blender_exec="/opt/blender/blender"
+                log "Using official Blender build from /opt/blender"
+            else
+                error "Official Blender not found at /opt/blender. Run installation first."
+                exit 1
+            fi
+            ;;
+        skip)
+            # Use system Blender
+            if ssh_execute "command -v blender" 2>/dev/null; then
+                blender_exec="blender"
+                log "Using pre-installed system Blender"
+            else
+                error "System Blender not found on VM"
+                exit 1
+            fi
+            ;;
+        *)
+            error "Unknown BLENDER_INSTALL_METHOD: $BLENDER_INSTALL_METHOD"
             exit 1
-        fi
-    else
-        log "Using system Blender"
-    fi
+            ;;
+    esac
     
     local blender_cmd="cd $REMOTE_WORK_DIR && $blender_exec -b"
     
