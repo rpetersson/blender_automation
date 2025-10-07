@@ -207,6 +207,11 @@ install_blender() {
 prepare_remote_directory() {
     log "Preparing remote working directory..."
     
+    # Clean up any existing work directory to prevent memory leaks
+    log "Cleaning up previous work directory..."
+    ssh_execute "rm -rf $REMOTE_WORK_DIR" 2>/dev/null || true
+    
+    # Create fresh directories
     ssh_execute "mkdir -p $REMOTE_WORK_DIR/input $REMOTE_WORK_DIR/output" || {
         error "Failed to create remote directories"
         exit 1
