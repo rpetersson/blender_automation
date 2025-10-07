@@ -32,7 +32,11 @@ echo
 # Get VM details from user
 read -p "VM Host/IP address: " VM_HOST
 read -p "VM Username: " VM_USER
+read -p "SSH Port (default: 22): " VM_PORT
 read -p "SSH Key file path (optional, press Enter to skip): " VM_KEY
+
+# Set defaults
+VM_PORT=${VM_PORT:-22}
 
 echo
 echo "Local directory configuration:"
@@ -72,6 +76,7 @@ cat > config.env << EOF
 # VM Connection Details (REQUIRED)
 VM_HOST="$VM_HOST"
 VM_USER="$VM_USER"
+VM_PORT="$VM_PORT"
 VM_KEY="$VM_KEY"
 
 # Local Directories

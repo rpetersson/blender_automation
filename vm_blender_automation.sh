@@ -16,6 +16,7 @@ CONFIG_FILE="./config.env"
 # Default values
 VM_HOST=""
 VM_USER=""
+VM_PORT="22"
 VM_KEY=""
 LOCAL_INPUT_DIR=""
 LOCAL_OUTPUT_DIR=""
@@ -72,11 +73,11 @@ load_config() {
 
 # Test SSH connection
 test_ssh_connection() {
-    log "Testing SSH connection to $VM_USER@$VM_HOST..."
+    log "Testing SSH connection to $VM_USER@$VM_HOST:$VM_PORT..."
     
-    local ssh_cmd="ssh"
+    local ssh_cmd="ssh -p $VM_PORT"
     if [[ -n "$VM_KEY" ]]; then
-        ssh_cmd="ssh -i $VM_KEY"
+        ssh_cmd="ssh -i $VM_KEY -p $VM_PORT"
     fi
     
     if $ssh_cmd -o ConnectTimeout=10 -o BatchMode=yes "$VM_USER@$VM_HOST" "echo 'SSH connection successful'" 2>/dev/null; then
@@ -90,10 +91,10 @@ test_ssh_connection() {
 # Execute command on remote VM
 ssh_execute() {
     local command="$1"
-    local ssh_cmd="ssh"
+    local ssh_cmd="ssh -p $VM_PORT"
     
     if [[ -n "$VM_KEY" ]]; then
-        ssh_cmd="ssh -i $VM_KEY"
+        ssh_cmd="ssh -i $VM_KEY -p $VM_PORT"
     fi
     
     $ssh_cmd "$VM_USER@$VM_HOST" "$command"
@@ -103,10 +104,10 @@ ssh_execute() {
 scp_upload() {
     local local_path="$1"
     local remote_path="$2"
-    local scp_cmd="scp"
+    local scp_cmd="scp -P $VM_PORT"
     
     if [[ -n "$VM_KEY" ]]; then
-        scp_cmd="scp -i $VM_KEY"
+        scp_cmd="scp -i $VM_KEY -P $VM_PORT"
     fi
     
     $scp_cmd -r "$local_path" "$VM_USER@$VM_HOST:$remote_path"
@@ -116,10 +117,10 @@ scp_upload() {
 scp_download() {
     local remote_path="$1"
     local local_path="$2"
-    local scp_cmd="scp"
+    local scp_cmd="scp -P $VM_PORT"
     
     if [[ -n "$VM_KEY" ]]; then
-        scp_cmd="scp -i $VM_KEY"
+        scp_cmd="scp -i $VM_KEY -P $VM_PORT"
     fi
     
     $scp_cmd -r "$VM_USER@$VM_HOST:$remote_path" "$local_path"
@@ -344,6 +345,7 @@ Options:
     -o, --output DIR        Local output directory
     -f, --file FILE         Blender file to render
     -s, --script FILE       Python script to run in Blender
+    -p, --port PORT         SSH port (default: 22)
     --frame-start N         Start frame (default: 1)
     --frame-end N           End frame (default: 1)
     --format FORMAT         Output format (default: png)
@@ -357,7 +359,8 @@ Examples:
     $0 -i ./input -o ./output -f scene.blend
     $0 -i ./assets -o ./renders -s render_script.py --frame-start 1 --frame-end 100
     $0 -i ./input -o ./output -f animation.blend --gpu --gpu-count 4 --frame-start 1 --frame-end 250
-    $0 --test-ssh
+    $0 -i ./input -o ./output -f scene.blend -p 2222  # Custom SSH port
+    $0 --test-ssh -p 2222  # Test SSH connection on custom port
 
 EOF
 }
@@ -388,6 +391,10 @@ parse_arguments() {
                 ;;
             -s|--script)
                 BLENDER_SCRIPT="$2"
+                shift 2
+                ;;
+            -p|--port)
+                VM_PORT="$2"
                 shift 2
                 ;;
             --frame-start)
