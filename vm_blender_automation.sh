@@ -223,6 +223,9 @@ run_blender() {
         fi
     fi
     
+    # Add render engine for Cycles (needed for CUDA)
+    blender_cmd="$blender_cmd -E CYCLES"
+    
     # Add Python script if specified
     if [[ -n "$BLENDER_SCRIPT" ]]; then
         if [[ "$BLENDER_SCRIPT" == /* ]]; then
@@ -240,11 +243,10 @@ run_blender() {
     # Add output settings
     blender_cmd="$blender_cmd -o output/render_#### -F $OUTPUT_FORMAT"
     
-    # Add CUDA GPU acceleration
-    blender_cmd="$blender_cmd -E CYCLES -- --cycles-device CUDA"
-    
-    # Add animation flag
-    blender_cmd="$blender_cmd -a"
+    # Add animation flag (only if rendering multiple frames)
+    if [[ "$FRAME_END" -gt "$FRAME_START" ]]; then
+        blender_cmd="$blender_cmd -a"
+    fi
     
     info "Executing: $blender_cmd"
     

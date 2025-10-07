@@ -4,25 +4,38 @@ import bpy
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete(use_global=False, confirm=False)
 
-# Enable CUDA for rendering
+# Configure Cycles render engine first
 scene = bpy.context.scene
 scene.render.engine = 'CYCLES'
 
-# Configure CUDA preferences
-prefs = bpy.context.preferences
-cycles_prefs = prefs.addons['cycles'].preferences
-
-# Set compute device type to CUDA
-cycles_prefs.compute_device_type = 'CUDA'
-
-# Enable all CUDA devices
-for device in cycles_prefs.devices:
-    if device.type == 'CUDA':
-        device.use = True
-        print(f"Enabled CUDA device: {device.name}")
-
-# Set render device to GPU
-scene.cycles.device = 'GPU'
+# Try to configure CUDA (but don't fail if it's not available)
+try:
+    prefs = bpy.context.preferences
+    cycles_prefs = prefs.addons['cycles'].preferences
+    
+    # Check if CUDA is available
+    cycles_prefs.refresh_devices()
+    cuda_devices = [device for device in cycles_prefs.devices if device.type == 'CUDA']
+    
+    if cuda_devices:
+        print(f"Found {len(cuda_devices)} CUDA device(s)")
+        cycles_prefs.compute_device_type = 'CUDA'
+        
+        # Enable CUDA devices
+        for device in cuda_devices:
+            device.use = True
+            print(f"Enabled CUDA device: {device.name}")
+        
+        scene.cycles.device = 'GPU'
+        print("CUDA acceleration enabled")
+    else:
+        print("No CUDA devices found, using CPU")
+        scene.cycles.device = 'CPU'
+        
+except Exception as e:
+    print(f"CUDA setup failed: {e}")
+    print("Falling back to CPU rendering")
+    scene.cycles.device = 'CPU'
 
 # Create a simple scene with a cube
 bpy.ops.mesh.primitive_cube_add(location=(0, 0, 0))
@@ -54,27 +67,25 @@ camera = bpy.data.objects['Camera']
 camera.location = (4, -4, 3)
 camera.rotation_euler = (1.1, 0, 0.785)
 
-# Set render settings optimized for GPU
+# Set render settings
 scene.render.resolution_x = 1920
 scene.render.resolution_y = 1080
 scene.render.image_settings.file_format = 'PNG'
 
-# GPU-optimized Cycles settings
-scene.cycles.samples = 128
+# Cycles settings
+scene.cycles.samples = 64  # Reduced for faster testing
 scene.cycles.use_denoising = True
-scene.cycles.denoiser = 'OIDN'
-
-# Set tile size for GPU rendering
-if hasattr(scene.render, 'tile_x'):
-    scene.render.tile_x = 256
-    scene.render.tile_y = 256
 
 # Set output path
 scene.render.filepath = '/tmp/blender_work/output/render_'
 
-print("Scene setup completed with CUDA acceleration")
+print("Scene setup completed")
+print(f"Render engine: {scene.render.engine}")
 print(f"Render device: {scene.cycles.device}")
-print(f"Compute device type: {cycles_prefs.compute_device_type}")
 print(f"Samples: {scene.cycles.samples}")
-print(f"Denoising: {scene.cycles.use_denoising}")
 print(f"Output path: {scene.render.filepath}")
+
+# Force render the current frame
+print("Starting render...")
+bpy.ops.render.render(write_still=True)
+print("Render completed!")
