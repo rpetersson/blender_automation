@@ -15,7 +15,7 @@ CONFIG_FILE="./config.env"
 
 # Default values
 VM_HOST=""
-VM_USER=""
+VM_USER="root"
 VM_PORT="22"
 VM_KEY=""
 LOCAL_INPUT_DIR=""
@@ -171,7 +171,8 @@ upload_files() {
     
     log "Uploading files from $LOCAL_INPUT_DIR to VM..."
     
-    scp_upload "$LOCAL_INPUT_DIR/*" "$REMOTE_WORK_DIR/input/" || {
+    # Upload the entire directory instead of using glob pattern
+    scp_upload "$LOCAL_INPUT_DIR" "$REMOTE_WORK_DIR/" || {
         error "Failed to upload files"
         exit 1
     }

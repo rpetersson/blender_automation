@@ -31,11 +31,12 @@ echo
 
 # Get VM details from user
 read -p "VM Host/IP address: " VM_HOST
-read -p "VM Username: " VM_USER
+read -p "VM Username (default: root): " VM_USER
 read -p "SSH Port (default: 22): " VM_PORT
 read -p "SSH Key file path (optional, press Enter to skip): " VM_KEY
 
 # Set defaults
+VM_USER=${VM_USER:-root}
 VM_PORT=${VM_PORT:-22}
 
 echo
