@@ -21,6 +21,7 @@ VM_KEY=""
 LOCAL_INPUT_DIR=""
 LOCAL_OUTPUT_DIR=""
 REMOTE_WORK_DIR="/tmp/blender_work"
+BLENDER_INSTALL_METHOD="snap"
 BLENDER_SCRIPT=""
 OUTPUT_FORMAT="png"
 FRAME_START=1
@@ -142,17 +143,62 @@ install_blender() {
         return 0
     fi
     
-    # Install Blender via snap
-    log "Installing Blender via snap..."
-    ssh_execute "sudo apt update && sudo snap install blender --classic" || {
-        error "Failed to install Blender"
-        exit 1
-    }
-    
-    # Try to enable GPU access for snap
-    log "Enabling GPU access for snap Blender..."
-    ssh_execute "sudo snap connect blender:hardware-observe 2>/dev/null || true"
-    ssh_execute "sudo snap connect blender:opengl 2>/dev/null || true"
+    # Install based on configured method
+    case "${BLENDER_INSTALL_METHOD:-snap}" in
+        snap)
+            log "Installing Blender via snap..."
+            ssh_execute "sudo apt update && sudo snap install blender --classic" || {
+                error "Failed to install Blender via snap"
+                exit 1
+            }
+            
+            # Enable GPU access for snap Blender - critical for CUDA
+            log "Configuring snap Blender for GPU access..."
+            ssh_execute "sudo snap connect blender:hardware-observe 2>/dev/null || true"
+            ssh_execute "sudo snap connect blender:opengl 2>/dev/null || true"
+            ssh_execute "sudo snap connect blender:cuda-control 2>/dev/null || true"
+            ssh_execute "sudo snap connect blender:nvidia-driver-support 2>/dev/null || true"
+            
+            # Check if snap can access NVIDIA GPU
+            if ssh_execute "snap run blender --version" 2>/dev/null | grep -q "Blender"; then
+                log "Snap Blender installed successfully"
+            else
+                warning "Snap Blender may have issues. Consider using BLENDER_INSTALL_METHOD=\"official\" for better GPU support"
+            fi
+            ;;
+            
+        official)
+            log "Installing official Blender build..."
+            
+            # Download and install official Blender
+            ssh_execute "
+                cd /tmp &&
+                wget -q https://download.blender.org/release/Blender4.0/blender-4.0.2-linux-x64.tar.xz &&
+                sudo tar -xf blender-4.0.2-linux-x64.tar.xz -C /opt/ &&
+                sudo ln -sf /opt/blender-4.0.2-linux-x64/blender /usr/local/bin/blender &&
+                rm blender-4.0.2-linux-x64.tar.xz
+            " || {
+                error "Failed to install official Blender"
+                exit 1
+            }
+            
+            log "Official Blender installed successfully"
+            ;;
+            
+        skip)
+            log "Skipping Blender installation (BLENDER_INSTALL_METHOD=skip)"
+            if ! ssh_execute "command -v blender" 2>/dev/null; then
+                error "Blender not found on VM, but installation was skipped"
+                exit 1
+            fi
+            ;;
+            
+        *)
+            error "Unknown BLENDER_INSTALL_METHOD: ${BLENDER_INSTALL_METHOD}"
+            info "Valid options: snap, official, skip"
+            exit 1
+            ;;
+    esac
     
     log "Blender installed successfully"
 }
