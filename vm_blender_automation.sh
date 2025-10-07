@@ -353,8 +353,7 @@ run_blender() {
     
     info "Executing: $blender_cmd"
     
-    # Execute Blender and filter out harmless memory warnings
-    ssh_execute "$blender_cmd 2>&1 | grep -v 'freed memory blocks\\|memleaks'" || {
+    ssh_execute "$blender_cmd" || {
         error "Blender execution failed"
         exit 1
     }
