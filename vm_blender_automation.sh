@@ -130,17 +130,29 @@ scp_download() {
 install_blender() {
     log "Installing Blender on VM..."
     
-    # Check if Blender is already installed
-    if ssh_execute "snap list blender" 2>/dev/null | grep -q "blender"; then
-        log "Blender is already installed"
+    # Check if Blender is already installed (system or snap)
+    if ssh_execute "command -v blender" 2>/dev/null; then
+        log "Blender is already installed (system)"
+        ssh_execute "blender --version" || true
         return 0
     fi
     
-    # Update system and install Blender
+    if ssh_execute "snap list blender" 2>/dev/null | grep -q "blender"; then
+        log "Blender is already installed (snap)"
+        return 0
+    fi
+    
+    # Install Blender via snap
+    log "Installing Blender via snap..."
     ssh_execute "sudo apt update && sudo snap install blender --classic" || {
         error "Failed to install Blender"
         exit 1
     }
+    
+    # Try to enable GPU access for snap
+    log "Enabling GPU access for snap Blender..."
+    ssh_execute "sudo snap connect blender:hardware-observe 2>/dev/null || true"
+    ssh_execute "sudo snap connect blender:opengl 2>/dev/null || true"
     
     log "Blender installed successfully"
 }
@@ -210,7 +222,22 @@ run_blender() {
         exit 1
     fi
     
-    local blender_cmd="cd $REMOTE_WORK_DIR && snap run blender -b"
+    # Detect which Blender to use (system or snap)
+    local blender_exec="blender"
+    if ! ssh_execute "command -v blender" 2>/dev/null; then
+        # System blender not found, try snap
+        if ssh_execute "snap list blender" 2>/dev/null | grep -q "blender"; then
+            blender_exec="snap run blender"
+            log "Using snap Blender"
+        else
+            error "Blender not found on VM"
+            exit 1
+        fi
+    else
+        log "Using system Blender"
+    fi
+    
+    local blender_cmd="cd $REMOTE_WORK_DIR && $blender_exec -b"
     
     # Add blend file if specified
     if [[ -n "$BLENDER_FILE" ]]; then
