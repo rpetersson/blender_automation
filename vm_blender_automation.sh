@@ -343,8 +343,8 @@ run_blender() {
     # Add output settings
     blender_cmd="$blender_cmd -o output/render_#### -F $OUTPUT_FORMAT"
     
-    # Force CUDA GPU rendering
-    blender_cmd="$blender_cmd -- --cycles-device CUDA"
+    # Force OPTIX GPU rendering
+    blender_cmd="$blender_cmd -- --cycles-device OPTIX"
     
     # Add animation flag (only if rendering multiple frames)
     if [[ "$FRAME_END" -gt "$FRAME_START" ]]; then
@@ -353,7 +353,8 @@ run_blender() {
     
     info "Executing: $blender_cmd"
     
-    ssh_execute "$blender_cmd" || {
+    # Execute Blender and filter out harmless memory warnings
+    ssh_execute "$blender_cmd 2>&1 | grep -v 'freed memory blocks\\|memleaks'" || {
         error "Blender execution failed"
         exit 1
     }

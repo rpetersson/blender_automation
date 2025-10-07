@@ -11,12 +11,12 @@ scene.render.engine = 'CYCLES'
 # Get Cycles preferences
 cycles_prefs = bpy.context.preferences.addons['cycles'].preferences
 
-# Enable GPU compute
-cycles_prefs.compute_device_type = 'CUDA'  # or 'OPENCL' or 'OPTIX'
+# Enable GPU compute with OPTIX
+cycles_prefs.compute_device_type = 'OPTIX'  # OPTIX for NVIDIA RTX GPUs
 
 # Enable all available GPUs or specific GPU
 for device in cycles_prefs.devices:
-    if device.type == 'CUDA':  # or 'OPENCL'
+    if device.type == 'OPTIX':  # OPTIX devices
         device.use = True
 
 # Set render device to GPU

@@ -2,26 +2,26 @@ import bpy
 import sys
 
 print("=" * 60)
-print("Blender CUDA Rendering Script")
+print("Blender OPTIX Rendering Script")
 print("=" * 60)
 
 # Configure Cycles render engine first
 scene = bpy.context.scene
 scene.render.engine = 'CYCLES'
 
-# Configure CUDA - More aggressive approach
-print("\nConfiguring GPU/CUDA...")
+# Configure OPTIX - More aggressive approach
+print("\nConfiguring GPU/OPTIX...")
 prefs = bpy.context.preferences
 cycles_prefs = prefs.addons['cycles'].preferences
 
 # Show current preferences
 print(f"Current compute device type: {cycles_prefs.compute_device_type}")
 
-# Try different compute device types in order of preference
+# Try different compute device types in order of preference (OPTIX first)
 device_type_found = False
 selected_device_type = None
 
-for device_type in ['CUDA', 'OPTIX', 'OPENCL', 'HIP']:
+for device_type in ['OPTIX', 'CUDA', 'OPENCL', 'HIP']:
     try:
         print(f"\nTrying {device_type}...")
         cycles_prefs.compute_device_type = device_type
@@ -58,7 +58,7 @@ else:
     scene.cycles.device = 'CPU'
     print("\nPossible reasons:")
     print("  1. NVIDIA drivers not installed on VM")
-    print("  2. Blender not compiled with CUDA support")
+    print("  2. Blender not compiled with OPTIX/CUDA support")
     print("  3. VM doesn't have an NVIDIA GPU")
     print("  4. Snap confinement preventing GPU access")
 
