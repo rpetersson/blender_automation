@@ -1,41 +1,21 @@
-# Example Blender Files
+# Input Directory
 
-This directory contains example files for testing the VM Blender automation script.
+Place your `.blend` projects and any supporting assets (textures, caches, etc.) in this folder. Everything inside will be uploaded to the VM before rendering begins.
 
-## Files
+## Recommended steps
 
-- `render_script.py`: A simple Python script that creates a basic scene with a blue cube and renders it
-- `README.md`: This file
-
-## Usage
-
-To test with the example script:
-
-```bash
-./vm_blender_automation.sh -i ./input -o ./output -s render_script.py
-```
-
-## Creating Your Own Files
-
-You can add your own .blend files and Python scripts to this directory. The automation script will upload all files in the input directory to the VM.
-
-### Blend Files
-Place your .blend files here and specify them with the `-f` or `--file` option:
+1. Copy your `.blend` file(s) here.
+2. Add all external resources the blend file depends on.
+3. Run the automation script:
 
 ```bash
 ./vm_blender_automation.sh -i ./input -o ./output -f your_scene.blend
 ```
 
-### Python Scripts
-Create Python scripts that use the Blender API (bpy) and specify them with the `-s` or `--script` option:
-
-```bash
-./vm_blender_automation.sh -i ./input -o ./output -s your_script.py
-```
-
-### Animation Rendering
-For animations, specify frame ranges:
+For animations, specify the frame range:
 
 ```bash
 ./vm_blender_automation.sh -i ./input -o ./output -f animation.blend --frame-start 1 --frame-end 250
 ```
+
+Remove unused files to keep uploads fast and conserve space on the VM.

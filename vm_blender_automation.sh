@@ -21,14 +21,9 @@ VM_KEY=""
 LOCAL_INPUT_DIR=""
 LOCAL_OUTPUT_DIR=""
 REMOTE_WORK_DIR="/tmp/blender_work"
-BLENDER_INSTALL_METHOD="snap"
-BLENDER_SCRIPT=""
 OUTPUT_FORMAT="png"
 FRAME_START=1
 FRAME_END=1
-USE_GPU_RENDERING=false
-GPU_COUNT=1
-REQUIRE_SUDO=false
 
 # Colors for output
 RED='\033[0;31m'
@@ -129,78 +124,31 @@ scp_download() {
 
 # Install Blender on VM
 install_blender() {
-    log "Installing Blender on VM..."
-    
-    # Check if Blender is already installed (system or snap)
-    if ssh_execute "command -v blender" 2>/dev/null; then
-        log "Blender is already installed (system)"
-        ssh_execute "blender --version" || true
-        return 0
-    fi
-    
+    log "Ensuring Blender (snap) is installed on VM..."
+
     if ssh_execute "snap list blender" 2>/dev/null | grep -q "blender"; then
-        log "Blender is already installed (snap)"
+        log "Snap Blender already installed"
         return 0
     fi
-    
-    # Install based on configured method
-    case "${BLENDER_INSTALL_METHOD:-snap}" in
-        snap)
-            log "Installing Blender via snap..."
-            ssh_execute "sudo apt update && sudo snap install blender --classic" || {
-                error "Failed to install Blender via snap"
-                exit 1
-            }
-            
-            # Enable GPU access for snap Blender - critical for CUDA
-            log "Configuring snap Blender for GPU access..."
-            ssh_execute "sudo snap connect blender:hardware-observe 2>/dev/null || true"
-            ssh_execute "sudo snap connect blender:opengl 2>/dev/null || true"
-            ssh_execute "sudo snap connect blender:cuda-control 2>/dev/null || true"
-            ssh_execute "sudo snap connect blender:nvidia-driver-support 2>/dev/null || true"
-            
-            # Check if snap can access NVIDIA GPU
-            if ssh_execute "snap run blender --version" 2>/dev/null | grep -q "Blender"; then
-                log "Snap Blender installed successfully"
-            else
-                warning "Snap Blender may have issues. Consider using BLENDER_INSTALL_METHOD=\"official\" for better GPU support"
-            fi
-            ;;
-            
-        official)
-            log "Installing official Blender build..."
-            
-            # Download and install official Blender
-            ssh_execute "
-                cd /tmp &&
-                wget -q https://download.blender.org/release/Blender4.0/blender-4.0.2-linux-x64.tar.xz &&
-                sudo tar -xf blender-4.0.2-linux-x64.tar.xz -C /opt/ &&
-                sudo ln -sf /opt/blender-4.0.2-linux-x64/blender /usr/local/bin/blender &&
-                rm blender-4.0.2-linux-x64.tar.xz
-            " || {
-                error "Failed to install official Blender"
-                exit 1
-            }
-            
-            log "Official Blender installed successfully"
-            ;;
-            
-        skip)
-            log "Skipping Blender installation (BLENDER_INSTALL_METHOD=skip)"
-            if ! ssh_execute "command -v blender" 2>/dev/null; then
-                error "Blender not found on VM, but installation was skipped"
-                exit 1
-            fi
-            ;;
-            
-        *)
-            error "Unknown BLENDER_INSTALL_METHOD: ${BLENDER_INSTALL_METHOD}"
-            info "Valid options: snap, official, skip"
-            exit 1
-            ;;
-    esac
-    
-    log "Blender installed successfully"
+
+    log "Installing Blender via snap..."
+    ssh_execute "sudo apt update && sudo snap install blender --classic" || {
+        error "Failed to install Blender via snap"
+        exit 1
+    }
+
+    # Enable GPU access for snap Blender - critical for GPU rendering
+    log "Configuring snap Blender for GPU access..."
+    ssh_execute "sudo snap connect blender:hardware-observe 2>/dev/null || true"
+    ssh_execute "sudo snap connect blender:opengl 2>/dev/null || true"
+    ssh_execute "sudo snap connect blender:cuda-control 2>/dev/null || true"
+    ssh_execute "sudo snap connect blender:nvidia-driver-support 2>/dev/null || true"
+
+    if ssh_execute "snap run blender --version" 2>/dev/null | grep -q "Blender"; then
+        log "Snap Blender installed successfully"
+    else
+        warning "Snap Blender installation completed but version check failed"
+    fi
 }
 
 # Prepare remote working directory
@@ -240,19 +188,6 @@ upload_files() {
         exit 1
     }
     
-    # Upload GPU rendering scripts if GPU rendering is enabled
-    if [[ "$USE_GPU_RENDERING" == "true" ]]; then
-        log "Uploading GPU rendering scripts..."
-        scp_upload "./gpu_render.sh" "$REMOTE_WORK_DIR/" || {
-            error "Failed to upload GPU rendering script"
-            exit 1
-        }
-        ssh_execute "chmod +x $REMOTE_WORK_DIR/gpu_render.sh" || {
-            error "Failed to make GPU script executable"
-            exit 1
-        }
-    fi
-    
     log "Files uploaded successfully"
 }
 
@@ -260,95 +195,47 @@ upload_files() {
 run_blender() {
     log "Running Blender in background mode..."
     
-    # Check if GPU rendering is enabled
-    if [[ "$USE_GPU_RENDERING" == "true" ]]; then
-        run_gpu_blender
-        return $?
-    fi
-    
-    # Validate that we have something to render
-    if [[ -z "$BLENDER_FILE" && -z "$BLENDER_SCRIPT" ]]; then
-        error "Either BLENDER_FILE or BLENDER_SCRIPT must be specified"
-        info "Use -f to specify a .blend file or -s to specify a Python script"
+    # Validate that we have a blend file to render
+    if [[ -z "$BLENDER_FILE" ]]; then
+        error "BLENDER_FILE must be specified"
+        info "Use -f to specify a .blend file"
         exit 1
     fi
     
-    # Determine which Blender to use based on installation method
-    local blender_exec="blender"
-    case "${BLENDER_INSTALL_METHOD:-snap}" in
-        snap)
-            if ssh_execute "snap list blender" 2>/dev/null | grep -q "blender"; then
-                blender_exec="snap run blender"
-                log "Using snap Blender (as configured)"
-            else
-                error "Snap Blender not found on VM. Run installation first."
-                exit 1
-            fi
-            ;;
-        official)
-            if ssh_execute "test -x /opt/blender/blender" 2>/dev/null; then
-                blender_exec="/opt/blender/blender"
-                log "Using official Blender build from /opt/blender"
-            else
-                error "Official Blender not found at /opt/blender. Run installation first."
-                exit 1
-            fi
-            ;;
-        skip)
-            # Use system Blender
-            if ssh_execute "command -v blender" 2>/dev/null; then
-                blender_exec="blender"
-                log "Using pre-installed system Blender"
-            else
-                error "System Blender not found on VM"
-                exit 1
-            fi
-            ;;
-        *)
-            error "Unknown BLENDER_INSTALL_METHOD: $BLENDER_INSTALL_METHOD"
-            exit 1
-            ;;
-    esac
+    # Always use snap Blender
+    if ! ssh_execute "snap list blender" 2>/dev/null | grep -q "blender"; then
+        error "Snap Blender not found on VM. Run installation first."
+        exit 1
+    fi
+
+    local blender_exec="snap run blender"
+    log "Using snap Blender"
     
     local blender_cmd="cd $REMOTE_WORK_DIR && $blender_exec -b"
     
-    # Add blend file if specified
-    if [[ -n "$BLENDER_FILE" ]]; then
-        if [[ "$BLENDER_FILE" == /* ]]; then
-            # Absolute path
-            blender_cmd="$blender_cmd $BLENDER_FILE"
-        else
-            # Relative path, assume it's in input directory
-            blender_cmd="$blender_cmd input/$BLENDER_FILE"
-        fi
+    # Add blend file (required)
+    if [[ "$BLENDER_FILE" == /* ]]; then
+        # Absolute path
+        blender_cmd="$blender_cmd $BLENDER_FILE"
+    else
+        # Relative path, assume it's in input directory
+        blender_cmd="$blender_cmd input/$BLENDER_FILE"
     fi
     
     # Add render engine for Cycles (needed for CUDA)
     blender_cmd="$blender_cmd -E CYCLES"
     
-    # Add Python script if specified
-    if [[ -n "$BLENDER_SCRIPT" ]]; then
-        if [[ "$BLENDER_SCRIPT" == /* ]]; then
-            # Absolute path
-            blender_cmd="$blender_cmd --python $BLENDER_SCRIPT"
-        else
-            # Relative path, assume it's in input directory
-            blender_cmd="$blender_cmd --python input/$BLENDER_SCRIPT"
-        fi
-    fi
-    
     # Add frame range
     blender_cmd="$blender_cmd -s $FRAME_START -e $FRAME_END"
     
     # Add output settings
-    blender_cmd="$blender_cmd -o output/render_#### -F $OUTPUT_FORMAT"
+    blender_cmd="$blender_cmd -o 'output/render_####' -F $OUTPUT_FORMAT"
     
     # Force OPTIX GPU rendering
     blender_cmd="$blender_cmd -- --cycles-device OPTIX"
     
-    # Add animation flag only if rendering multiple frames AND we have a blend file
-    # Python scripts that call bpy.ops.render.render() don't need -a flag
-    if [[ "$FRAME_END" -gt "$FRAME_START" ]] && [[ -n "$BLENDER_FILE" ]]; then
+    # Add animation flag only when rendering multiple frames
+    if [[ "$FRAME_END" -gt "$FRAME_START" ]]; then
         blender_cmd="$blender_cmd -a"
     fi
     
@@ -362,50 +249,6 @@ run_blender() {
     fi
     
     log "Blender execution completed"
-}
-
-# Run GPU-optimized Blender rendering
-run_gpu_blender() {
-    log "Running GPU-optimized Blender rendering..."
-    
-    # Check if blend file is specified
-    if [[ -z "$BLENDER_FILE" ]]; then
-        error "GPU rendering requires a .blend file to be specified"
-        exit 1
-    fi
-    
-    # Check GPU availability
-    log "Checking GPU availability on VM..."
-    if ! ssh_execute "nvidia-smi" 2>/dev/null; then
-        error "NVIDIA GPUs not detected on VM. GPU rendering requires NVIDIA GPUs."
-        exit 1
-    fi
-    
-    # Prepare GPU rendering command
-    local blend_path
-    if [[ "$BLENDER_FILE" == /* ]]; then
-        blend_path="$BLENDER_FILE"
-    else
-        blend_path="input/$BLENDER_FILE"
-    fi
-    
-    local gpu_cmd="cd $REMOTE_WORK_DIR"
-    
-    # Add sudo if required
-    if [[ "$REQUIRE_SUDO" == "true" ]]; then
-        gpu_cmd="$gpu_cmd && sudo ./gpu_render.sh $blend_path $FRAME_START $FRAME_END $GPU_COUNT"
-    else
-        gpu_cmd="$gpu_cmd && ./gpu_render.sh $blend_path $FRAME_START $FRAME_END $GPU_COUNT"
-    fi
-    
-    info "Executing GPU rendering: $gpu_cmd"
-    
-    ssh_execute "$gpu_cmd" || {
-        error "GPU Blender execution failed"
-        exit 1
-    }
-    
-    log "GPU Blender execution completed"
 }
 
 # Download output files
@@ -456,21 +299,16 @@ Options:
     -i, --input DIR         Local input directory
     -o, --output DIR        Local output directory
     -f, --file FILE         Blender file to render
-    -s, --script FILE       Python script to run in Blender
     -p, --port PORT         SSH port (default: 22)
     --frame-start N         Start frame (default: 1)
     --frame-end N           End frame (default: 1)
     --format FORMAT         Output format (default: png)
-    --gpu                   Enable GPU-optimized rendering
-    --gpu-count N           Number of GPUs to use (default: 1)
-    --require-sudo          GPU configuration requires sudo access
     --test-ssh              Test SSH connection only
     --no-cleanup            Don't cleanup remote files
 
 Examples:
     $0 -i ./input -o ./output -f scene.blend
-    $0 -i ./assets -o ./renders -s render_script.py --frame-start 1 --frame-end 100
-    $0 -i ./input -o ./output -f animation.blend --gpu --gpu-count 4 --frame-start 1 --frame-end 250
+    $0 -i ./input -o ./output -f animation.blend --frame-start 1 --frame-end 250
     $0 -i ./input -o ./output -f scene.blend -p 2222  # Custom SSH port
     $0 --test-ssh -p 2222  # Test SSH connection on custom port
 
@@ -501,10 +339,6 @@ parse_arguments() {
                 BLENDER_FILE="$2"
                 shift 2
                 ;;
-            -s|--script)
-                BLENDER_SCRIPT="$2"
-                shift 2
-                ;;
             -p|--port)
                 VM_PORT="$2"
                 shift 2
@@ -520,18 +354,6 @@ parse_arguments() {
             --format)
                 OUTPUT_FORMAT="$2"
                 shift 2
-                ;;
-            --gpu)
-                USE_GPU_RENDERING=true
-                shift
-                ;;
-            --gpu-count)
-                GPU_COUNT="$2"
-                shift 2
-                ;;
-            --require-sudo)
-                REQUIRE_SUDO=true
-                shift
                 ;;
             --test-ssh)
                 TEST_SSH_ONLY=true
