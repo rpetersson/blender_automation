@@ -24,6 +24,9 @@ REMOTE_WORK_DIR="/tmp/blender_work"
 OUTPUT_FORMAT="png"
 FRAME_START=1
 FRAME_END=1
+COMPRESS_OUTPUT=true
+COMPRESSION_FORMAT="tar.gz"
+ARCHIVE_NAME="blender_output"
 
 # Colors for output
 RED='\033[0;31m'
@@ -64,6 +67,20 @@ load_config() {
     if [[ -z "$VM_HOST" || -z "$VM_USER" ]]; then
         error "VM_HOST and VM_USER must be set in config.env"
         exit 1
+    fi
+    
+    # Validate compression format if compression is enabled
+    if [[ "$COMPRESS_OUTPUT" == "true" ]]; then
+        case "$COMPRESSION_FORMAT" in
+            "tar.gz"|"tgz"|"tar.bz2"|"tbz"|"zip")
+                # Valid format
+                ;;
+            *)
+                error "Invalid compression format: $COMPRESSION_FORMAT"
+                error "Supported formats: tar.gz, tgz, tar.bz2, tbz, zip"
+                exit 1
+                ;;
+        esac
     fi
 }
 
@@ -336,13 +353,93 @@ download_output() {
     # Create local output directory if it doesn't exist
     mkdir -p "$LOCAL_OUTPUT_DIR"
     
-    log "Downloading output files to $LOCAL_OUTPUT_DIR..."
-    
     # Check if there are any output files
     if ! ssh_execute "ls $REMOTE_WORK_DIR/output/" 2>/dev/null | grep -q .; then
         warning "No output files found on VM"
         return 0
     fi
+    
+    if [[ "$COMPRESS_OUTPUT" == "true" ]]; then
+        download_compressed_output
+    else
+        download_individual_files
+    fi
+}
+
+# Download compressed output files
+download_compressed_output() {
+    log "Compressing and downloading output files..."
+    
+    # Create archive on remote VM
+    local archive_name="${ARCHIVE_NAME}.${COMPRESSION_FORMAT}"
+    local remote_archive_path="$REMOTE_WORK_DIR/$archive_name"
+    
+    case "$COMPRESSION_FORMAT" in
+        "tar.gz"|"tgz")
+            ssh_execute "cd $REMOTE_WORK_DIR && tar -czf '$archive_name' -C output ." || {
+                error "Failed to create tar.gz archive"
+                exit 1
+            }
+            ;;
+        "tar.bz2"|"tbz")
+            ssh_execute "cd $REMOTE_WORK_DIR && tar -cjf '$archive_name' -C output ." || {
+                error "Failed to create tar.bz2 archive"
+                exit 1
+            }
+            ;;
+        "zip")
+            # Check if zip is available, install if needed
+            if ! ssh_execute "which zip" >/dev/null 2>&1; then
+                log "Installing zip utility on VM..."
+                ssh_execute "apt-get update && apt-get install -y zip" || {
+                    error "Failed to install zip utility"
+                    exit 1
+                }
+            fi
+            ssh_execute "cd $REMOTE_WORK_DIR/output && zip -r '../$archive_name' ." || {
+                error "Failed to create zip archive"
+                exit 1
+            }
+            ;;
+        *)
+            error "Unsupported compression format: $COMPRESSION_FORMAT"
+            error "Supported formats: tar.gz, tgz, tar.bz2, tbz, zip"
+            exit 1
+            ;;
+    esac
+    
+    # Get archive size for progress indication
+    local archive_size
+    archive_size=$(ssh_execute "stat -c%s '$remote_archive_path' 2>/dev/null || echo 'unknown'")
+    if [[ "$archive_size" != "unknown" ]]; then
+        local size_mb=$((archive_size / 1024 / 1024))
+        info "Archive created: $archive_name (${size_mb}MB)"
+    else
+        info "Archive created: $archive_name"
+    fi
+    
+    # Download the compressed archive
+    scp_download "$remote_archive_path" "$LOCAL_OUTPUT_DIR/" || {
+        error "Failed to download compressed archive"
+        exit 1
+    }
+    
+    # Clean up the archive on remote VM
+    ssh_execute "rm -f '$remote_archive_path'" 2>/dev/null || {
+        warning "Failed to clean up remote archive"
+    }
+    
+    log "Compressed output downloaded successfully to $LOCAL_OUTPUT_DIR/$archive_name"
+    
+    # Optional: Extract archive locally
+    if [[ "$EXTRACT_LOCALLY" == "true" ]]; then
+        extract_archive_locally "$LOCAL_OUTPUT_DIR/$archive_name"
+    fi
+}
+
+# Download individual files (original behavior)
+download_individual_files() {
+    log "Downloading individual output files to $LOCAL_OUTPUT_DIR..."
     
     scp_download "$REMOTE_WORK_DIR/output/*" "$LOCAL_OUTPUT_DIR/" || {
         error "Failed to download output files"
@@ -350,6 +447,43 @@ download_output() {
     }
     
     log "Output files downloaded successfully"
+}
+
+# Extract archive locally
+extract_archive_locally() {
+    local archive_path="$1"
+    local extract_dir="${archive_path%.*}"
+    
+    log "Extracting archive locally to $extract_dir..."
+    
+    mkdir -p "$extract_dir"
+    
+    case "$COMPRESSION_FORMAT" in
+        "tar.gz"|"tgz")
+            tar -xzf "$archive_path" -C "$extract_dir" || {
+                error "Failed to extract tar.gz archive"
+                return 1
+            }
+            ;;
+        "tar.bz2"|"tbz")
+            tar -xjf "$archive_path" -C "$extract_dir" || {
+                error "Failed to extract tar.bz2 archive"
+                return 1
+            }
+            ;;
+        "zip")
+            if ! command -v unzip >/dev/null 2>&1; then
+                warning "unzip command not found, skipping local extraction"
+                return 1
+            fi
+            unzip -q "$archive_path" -d "$extract_dir" || {
+                error "Failed to extract zip archive"
+                return 1
+            }
+            ;;
+    esac
+    
+    log "Archive extracted to $extract_dir"
 }
 
 # Cleanup remote files
@@ -378,12 +512,18 @@ Options:
     --frame-start N         Start frame (default: 1)
     --frame-end N           End frame (default: 1)
     --format FORMAT         Output format (default: png)
+    --compress              Compress all output files into a single archive
+    --compression-format FORMAT  Compression format: tar.gz, tgz, tar.bz2, tbz, zip (default: tar.gz)
+    --archive-name NAME     Name for the compressed archive (default: blender_output)
+    --extract               Extract compressed archive locally after download
     --test-ssh              Test SSH connection only
     --no-cleanup            Don't cleanup remote files
 
 Examples:
     $0 -i ./input -o ./output -f scene.blend
     $0 -i ./input -o ./output -f animation.blend --frame-start 1 --frame-end 250
+    $0 -i ./input -o ./output -f scene.blend --compress --compression-format zip
+    $0 -i ./input -o ./output -f animation.blend --compress --extract
     $0 -i ./input -o ./output -f scene.blend -p 2222  # Custom SSH port
     $0 --test-ssh -p 2222  # Test SSH connection on custom port
 
@@ -430,6 +570,22 @@ parse_arguments() {
                 OUTPUT_FORMAT="$2"
                 shift 2
                 ;;
+            --compress)
+                COMPRESS_OUTPUT=true
+                shift
+                ;;
+            --compression-format)
+                COMPRESSION_FORMAT="$2"
+                shift 2
+                ;;
+            --archive-name)
+                ARCHIVE_NAME="$2"
+                shift 2
+                ;;
+            --extract)
+                EXTRACT_LOCALLY=true
+                shift
+                ;;
             --test-ssh)
                 TEST_SSH_ONLY=true
                 shift
@@ -454,6 +610,15 @@ main() {
     # Load configuration
     load_config
     
+    # Show compression status if enabled
+    if [[ "$COMPRESS_OUTPUT" == "true" ]]; then
+        info "Output compression enabled: $COMPRESSION_FORMAT format"
+        info "Archive name: ${ARCHIVE_NAME}.${COMPRESSION_FORMAT}"
+        if [[ "$EXTRACT_LOCALLY" == "true" ]]; then
+            info "Will extract archive locally after download"
+        fi
+    fi
+    
     # Test SSH connection
     test_ssh_connection
     
@@ -473,13 +638,21 @@ main() {
     log "VM Blender Automation completed successfully!"
     
     if [[ -n "$LOCAL_OUTPUT_DIR" ]]; then
-        info "Output files are available in: $LOCAL_OUTPUT_DIR"
+        if [[ "$COMPRESS_OUTPUT" == "true" ]]; then
+            info "Compressed output available in: $LOCAL_OUTPUT_DIR/${ARCHIVE_NAME}.${COMPRESSION_FORMAT}"
+            if [[ "$EXTRACT_LOCALLY" == "true" ]]; then
+                info "Extracted files available in: $LOCAL_OUTPUT_DIR/${ARCHIVE_NAME}"
+            fi
+        else
+            info "Output files are available in: $LOCAL_OUTPUT_DIR"
+        fi
     fi
 }
 
 # Default values for optional flags
 TEST_SSH_ONLY=false
 CLEANUP_REMOTE=true
+EXTRACT_LOCALLY=false
 
 # Parse command line arguments
 parse_arguments "$@"
