@@ -225,24 +225,19 @@ run_blender() {
     # Add render engine for Cycles (needed for CUDA)
     blender_cmd="$blender_cmd -E CYCLES"
     
-    # Add frame parameters
-    if [[ "$FRAME_END" -gt "$FRAME_START" ]]; then
-        blender_cmd="$blender_cmd -s $FRAME_START -e $FRAME_END"
-    else
-        blender_cmd="$blender_cmd -f $FRAME_START"
-    fi
-
     # Add output settings (use absolute path so Blender writes where we expect)
     local output_pattern="$REMOTE_WORK_DIR/output/render_####"
     blender_cmd="$blender_cmd -o '$output_pattern' -F $OUTPUT_FORMAT"
 
+    # Add frame parameters (place after output so Blender uses the pattern when rendering)
+    if [[ "$FRAME_END" -gt "$FRAME_START" ]]; then
+        blender_cmd="$blender_cmd -s $FRAME_START -e $FRAME_END -a"
+    else
+        blender_cmd="$blender_cmd -f $FRAME_START"
+    fi
+
     # Force OPTIX GPU rendering
     blender_cmd="$blender_cmd -- --cycles-device OPTIX"
-
-    # Add animation flag only when rendering multiple frames
-    if [[ "$FRAME_END" -gt "$FRAME_START" ]]; then
-        blender_cmd="$blender_cmd -a"
-    fi
     
     info "Executing: $blender_cmd"
     
