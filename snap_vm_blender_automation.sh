@@ -236,6 +236,8 @@ run_blender() {
     fi
 
     local output_pattern="$REMOTE_WORK_DIR/output/render_####"
+    
+    # Build base command without environment variables (added per GPU later)
     local base_cmd="cd $REMOTE_WORK_DIR && $blender_exec -b '$blend_path' -E CYCLES -o '$output_pattern' -F $OUTPUT_FORMAT"
 
     # Detect available NVIDIA GPUs (if any)
@@ -276,7 +278,9 @@ run_blender() {
                 range_end=$FRAME_END
             fi
 
-            local render_cmd="CUDA_VISIBLE_DEVICES=$gpu $base_cmd"
+            # Build render command with environment variables for Vulkan fix
+            # Use 'env' command to ensure environment variables are set properly over SSH
+            local render_cmd="cd $REMOTE_WORK_DIR && env BLENDER_USD_DISABLE_HYDRA=1 CUDA_VISIBLE_DEVICES=$gpu $blender_exec -b '$blend_path' -E CYCLES -o '$output_pattern' -F $OUTPUT_FORMAT"
             if (( range_end > range_start )); then
                 render_cmd="$render_cmd -s $range_start -e $range_end -a"
             else
@@ -323,14 +327,17 @@ run_blender() {
     fi
 
     if (( gpu_count >= 1 )); then
-        # Pin to the first GPU for consistency
-        render_cmd="CUDA_VISIBLE_DEVICES=${gpu_indices[0]} $render_cmd"
-        log "Detected GPU ${gpu_indices[0]}; assigning render"
+        # Pin to the first GPU for consistency, add environment variables for Vulkan fix
+        # Use 'env' command to ensure environment variables are set properly over SSH
+        render_cmd="env BLENDER_USD_DISABLE_HYDRA=1 CUDA_VISIBLE_DEVICES=${gpu_indices[0]} $render_cmd"
+        render_cmd="$render_cmd -- --cycles-device OPTIX"
+        log "Detected GPU ${gpu_indices[0]}; assigning render with OPTIX"
     else
-        warning "No NVIDIA GPUs detected via nvidia-smi; falling back to default device"
+        error "No NVIDIA GPUs detected via nvidia-smi!"
+        error "This script requires GPU rendering. CPU rendering is disabled."
+        error "Please use a VM/instance with NVIDIA GPU support."
+        exit 1
     fi
-
-    render_cmd="$render_cmd -- --cycles-device OPTIX"
 
     info "Executing: $render_cmd"
 

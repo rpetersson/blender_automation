@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# VM Blender Automation Script
+# VM Blender Automation Script (Use Existing Installation)
 # This script automates the process of:
 # 1. SSH into Ubuntu VM
-# 2. Install Blender manually from official download
+# 2. Use existing Blender installation (no installation performed)
 # 3. Upload local files to VM
 # 4. Run Blender in background mode
 # 5. Download output files back to local machine
@@ -12,12 +12,6 @@ set -e  # Exit on any error
 
 # Configuration file path
 CONFIG_FILE="./config.env"
-
-# Blender installation settings
-BLENDER_VERSION="4.5.3"
-BLENDER_DOWNLOAD_URL="https://download.blender.org/release/Blender4.5/blender-4.5.3-linux-x64.tar.xz"
-BLENDER_INSTALL_DIR="/opt/blender"
-BLENDER_ARCHIVE="blender-${BLENDER_VERSION}-linux-x64.tar.xz"
 
 # Default values
 VM_HOST=""
@@ -145,75 +139,59 @@ scp_download() {
     $scp_cmd -r "$VM_USER@$VM_HOST:$remote_path" "$local_path"
 }
 
-# Install Blender on VM
-install_blender() {
-    log "Installing Blender ${BLENDER_VERSION} manually from official download..."
-
-    # Check if Blender is already installed
-    if ssh_execute "test -f ${BLENDER_INSTALL_DIR}/blender" 2>/dev/null; then
-        local installed_version
-        installed_version=$(ssh_execute "${BLENDER_INSTALL_DIR}/blender --version 2>/dev/null | head -1" || echo "")
-        
-        if echo "$installed_version" | grep -q "$BLENDER_VERSION"; then
-            log "Blender ${BLENDER_VERSION} is already installed"
-            return 0
-        else
-            log "Different Blender version found, reinstalling..."
-            ssh_execute "rm -rf ${BLENDER_INSTALL_DIR}" 2>/dev/null || true
-        fi
-    fi
-
-    # Install required dependencies
-    log "Installing required dependencies..."
-    ssh_execute "apt-get update && apt-get install -y wget xz-utils libxi6 libxxf86vm1 libxfixes3 libxrender1 libgl1" || {
-        error "Failed to install dependencies"
-        exit 1
-    }
-
-    # Download Blender
-    log "Downloading Blender ${BLENDER_VERSION}..."
-    ssh_execute "cd /tmp && wget -q --show-progress '${BLENDER_DOWNLOAD_URL}' -O '${BLENDER_ARCHIVE}' 2>&1 || wget '${BLENDER_DOWNLOAD_URL}' -O '${BLENDER_ARCHIVE}'" || {
-        error "Failed to download Blender from ${BLENDER_DOWNLOAD_URL}"
-        exit 1
-    }
-
-    # Extract Blender
-    log "Extracting Blender archive..."
-    ssh_execute "cd /tmp && tar -xf '${BLENDER_ARCHIVE}'" || {
-        error "Failed to extract Blender archive"
-        exit 1
-    }
-
-    # Move to installation directory
-    log "Installing Blender to ${BLENDER_INSTALL_DIR}..."
-    ssh_execute "mkdir -p $(dirname ${BLENDER_INSTALL_DIR})" || {
-        error "Failed to create installation directory"
-        exit 1
-    }
+# Check Blender installation
+check_blender() {
+    # Try to find Blender in common locations
+    local blender_path=""
     
-    # Find the extracted directory (it should be blender-4.5.3-linux-x64)
-    local extracted_dir="blender-${BLENDER_VERSION}-linux-x64"
-    ssh_execute "mv /tmp/${extracted_dir} ${BLENDER_INSTALL_DIR}" || {
-        error "Failed to move Blender to installation directory"
-        exit 1
-    }
-
-    # Clean up downloaded archive
-    ssh_execute "rm -f /tmp/${BLENDER_ARCHIVE}" 2>/dev/null || true
-
-    # Create symbolic link for easier access (optional)
-    ssh_execute "ln -sf ${BLENDER_INSTALL_DIR}/blender /usr/local/bin/blender" 2>/dev/null || true
-
-    # Verify installation
-    local detected_version
-    detected_version=$(ssh_execute "${BLENDER_INSTALL_DIR}/blender --version" 2>/dev/null | head -n 1 | grep -oP 'Blender \K[0-9]+\.[0-9]+\.[0-9]+')
-    if [[ "$detected_version" == "$BLENDER_VERSION" ]]; then
-        log "Blender ${BLENDER_VERSION} installed successfully"
-        ssh_execute "${BLENDER_INSTALL_DIR}/blender --version | head -3"
-    else
-        error "Blender installation verification failed"
+    # Check common installation paths
+    local common_paths=(
+        "/opt/blender/blender"
+        "/usr/local/bin/blender"
+        "/usr/bin/blender"
+        "$(which blender 2>/dev/null || echo '')"
+    )
+    
+    for path in "${common_paths[@]}"; do
+        if [[ -n "$path" ]] && ssh_execute "test -x '$path'" 2>/dev/null; then
+            blender_path="$path"
+            break
+        fi
+    done
+    
+    # Also check for snap Blender
+    if [[ -z "$blender_path" ]] && ssh_execute "snap list blender" 2>/dev/null | grep -q "blender"; then
+        blender_path="snap run blender"
+    fi
+    
+    if [[ -z "$blender_path" ]]; then
+        error "No Blender installation found on VM!"
+        error "Checked locations:"
+        error "  - /opt/blender/blender"
+        error "  - /usr/local/bin/blender"
+        error "  - /usr/bin/blender"
+        error "  - snap (snap run blender)"
+        error ""
+        error "Please install Blender on the VM first, or use manual_vm_blender_automation.sh"
         exit 1
     fi
+    
+    # Get Blender version (suppress output, only check success)
+    local version_output
+    version_output=$(ssh_execute "$blender_path -b --version 2>&1 | head -n 1" || echo "")
+    
+    if [[ -n "$version_output" ]]; then
+        # Log to stderr to avoid polluting the return value
+        log "Found Blender: $version_output" >&2
+        log "Executable: $blender_path" >&2
+    else
+        error "Found Blender at $blender_path but could not get version"
+        error "The installation may be broken"
+        exit 1
+    fi
+    
+    # Return ONLY the path (to stdout)
+    echo "$blender_path"
 }
 
 # Prepare remote working directory
@@ -267,14 +245,9 @@ run_blender() {
         exit 1
     fi
     
-    # Use manually installed Blender
-    if ! ssh_execute "test -f ${BLENDER_INSTALL_DIR}/blender" 2>/dev/null; then
-        error "Blender not found at ${BLENDER_INSTALL_DIR}/blender. Run installation first."
-        exit 1
-    fi
-
-    local blender_exec="${BLENDER_INSTALL_DIR}/blender"
-    log "Using Blender ${BLENDER_VERSION} from ${BLENDER_INSTALL_DIR}"
+    # Find existing Blender installation
+    local blender_exec
+    blender_exec=$(check_blender)
 
     local blend_path
     if [[ "$BLENDER_FILE" == /* ]]; then
@@ -682,8 +655,7 @@ main() {
         exit 0
     fi
     
-    # Execute the workflow
-    install_blender
+    # Execute the workflow (no Blender installation)
     prepare_remote_directory
     upload_files
     run_blender
