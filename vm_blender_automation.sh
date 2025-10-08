@@ -210,44 +210,119 @@ run_blender() {
 
     local blender_exec="snap run blender"
     log "Using snap Blender"
-    
-    local blender_cmd="cd $REMOTE_WORK_DIR && $blender_exec -b"
-    
-    # Add blend file (required)
+
+    local blend_path
     if [[ "$BLENDER_FILE" == /* ]]; then
-        # Absolute path
-        blender_cmd="$blender_cmd $BLENDER_FILE"
+        blend_path="$BLENDER_FILE"
     else
-        # Relative path, assume it's in input directory
-        blender_cmd="$blender_cmd input/$BLENDER_FILE"
+        blend_path="input/$BLENDER_FILE"
     fi
-    
-    # Add render engine for Cycles (needed for CUDA)
-    blender_cmd="$blender_cmd -E CYCLES"
-    
-    # Add output settings (use absolute path so Blender writes where we expect)
+
     local output_pattern="$REMOTE_WORK_DIR/output/render_####"
-    blender_cmd="$blender_cmd -o '$output_pattern' -F $OUTPUT_FORMAT"
+    local base_cmd="cd $REMOTE_WORK_DIR && $blender_exec -b '$blend_path' -E CYCLES -o '$output_pattern' -F $OUTPUT_FORMAT"
 
-    # Add frame parameters (place after output so Blender uses the pattern when rendering)
-    if [[ "$FRAME_END" -gt "$FRAME_START" ]]; then
-        blender_cmd="$blender_cmd -s $FRAME_START -e $FRAME_END -a"
-    else
-        blender_cmd="$blender_cmd -f $FRAME_START"
+    # Detect available NVIDIA GPUs (if any)
+    local gpu_raw
+    gpu_raw=$(ssh_execute "nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null || true") || gpu_raw=""
+    local -a gpu_indices=()
+    if [[ -n "$gpu_raw" ]]; then
+        while IFS= read -r line; do
+            local trimmed="${line//[[:space:]]/}"
+            if [[ -n "$trimmed" ]]; then
+                gpu_indices+=("$trimmed")
+            fi
+        done <<< "$gpu_raw"
     fi
 
-    # Force OPTIX GPU rendering
-    blender_cmd="$blender_cmd -- --cycles-device OPTIX"
-    
-    info "Executing: $blender_cmd"
-    
-    # Execute and capture output
-    if ! ssh_execute "$blender_cmd"; then
+    local total_frames=$((FRAME_END - FRAME_START + 1))
+    if (( total_frames < 1 )); then
+        error "Invalid frame range: FRAME_END ($FRAME_END) must be >= FRAME_START ($FRAME_START)"
+        exit 1
+    fi
+
+    local gpu_count=${#gpu_indices[@]}
+    if (( gpu_count > 1 && total_frames > 1 )); then
+        log "Detected $gpu_count GPUs; splitting $total_frames frames across them"
+        local chunk_size=$(( (total_frames + gpu_count - 1) / gpu_count ))
+        local chunk_start=$FRAME_START
+        local -a pids=()
+        local -a labels=()
+
+        for gpu in "${gpu_indices[@]}"; do
+            if (( chunk_start > FRAME_END )); then
+                break
+            fi
+
+            local range_start=$chunk_start
+            local range_end=$((range_start + chunk_size - 1))
+            if (( range_end > FRAME_END )); then
+                range_end=$FRAME_END
+            fi
+
+            local render_cmd="CUDA_VISIBLE_DEVICES=$gpu $base_cmd"
+            if (( range_end > range_start )); then
+                render_cmd="$render_cmd -s $range_start -e $range_end -a"
+            else
+                render_cmd="$render_cmd -f $range_start"
+            fi
+            render_cmd="$render_cmd -- --cycles-device OPTIX"
+
+            info "Launching GPU $gpu: frames $range_start-$range_end"
+            ssh_execute "$render_cmd" &
+            local pid=$!
+            pids+=("$pid")
+            labels+=("GPU $gpu (frames $range_start-$range_end)")
+
+            chunk_start=$((range_end + 1))
+        done
+
+        local failures=0
+        for idx in "${!pids[@]}"; do
+            local pid=${pids[$idx]}
+            local label=${labels[$idx]}
+            if wait "$pid"; then
+                log "$label completed"
+            else
+                error "$label failed"
+                failures=$((failures + 1))
+            fi
+        done
+
+        if (( failures > 0 )); then
+            error "One or more GPU renders failed"
+            exit 1
+        fi
+
+        log "Blender execution completed across $gpu_count GPUs"
+        return
+    fi
+
+    # Single GPU (or CPU) path
+    local render_cmd="$base_cmd"
+    if (( total_frames > 1 )); then
+        render_cmd="$render_cmd -s $FRAME_START -e $FRAME_END -a"
+    else
+        render_cmd="$render_cmd -f $FRAME_START"
+    fi
+
+    if (( gpu_count >= 1 )); then
+        # Pin to the first GPU for consistency
+        render_cmd="CUDA_VISIBLE_DEVICES=${gpu_indices[0]} $render_cmd"
+        log "Detected GPU ${gpu_indices[0]}; assigning render"
+    else
+        warning "No NVIDIA GPUs detected via nvidia-smi; falling back to default device"
+    fi
+
+    render_cmd="$render_cmd -- --cycles-device OPTIX"
+
+    info "Executing: $render_cmd"
+
+    if ! ssh_execute "$render_cmd"; then
         error "Blender execution failed"
         error "Check the output above for details"
         exit 1
     fi
-    
+
     log "Blender execution completed"
 }
 

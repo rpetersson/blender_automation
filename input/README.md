@@ -20,6 +20,8 @@ For animations, specify the frame range:
 
 The script automatically treats matching start/end frames as a single still render and uses `-f` under the hood, while wider ranges trigger animation mode with `-s/-e -a`.
 
+When the VM exposes multiple NVIDIA GPUs, the automation script detects them and launches each chunk in parallel so all cards work through their assigned frame ranges simultaneously.
+
 Remove unused files to keep uploads fast and conserve space on the VM.
 
 Rendered frames will come back to your local `./output` directory with the pattern `render_####.<FORMAT>` once the job finishes.
