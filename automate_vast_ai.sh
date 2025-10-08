@@ -447,13 +447,21 @@ start_instance() {
         print_status "Instance start command sent successfully (test mode)"
         return 0
     fi
-    
+
+    if [ "$DEBUG" = "true" ]; then
+        print_error "Debug: Sending start command to instance $instance_id"
+    fi
+
     local start_result=$(curl -s -X PUT \
         "https://console.vast.ai/api/v0/instances/$instance_id/" \
         -H "Authorization: Bearer $VAST_API_KEY" \
         -H "Content-Type: application/json" \
         -d '{"state": "running"}')
     
+    if [ "$DEBUG" = "true" ]; then
+        print_error "Debug: Start command response: $start_result"
+    fi
+
     if echo "$start_result" | grep -q '"success":true'; then
         print_status "Instance start command sent successfully"
         return 0
@@ -464,9 +472,7 @@ start_instance() {
         fi
         return 1
     fi
-}
-
-# Function to wait for instance to be ready
+}# Function to wait for instance to be ready
 wait_for_instance() {
     local instance_id="$1"
     local max_wait=600  # 10 minutes
@@ -500,11 +506,17 @@ wait_for_instance() {
             "created")
                 if [ "$instance_started" = false ]; then
                     print_status "Instance created, starting it..."
+                    if [ "$DEBUG" = "true" ]; then
+                        print_error "Debug: About to call start_instance with ID: $instance_id"
+                    fi
                     if start_instance "$instance_id"; then
                         instance_started=true
                         print_status "Start command sent, waiting for instance to load..."
                     else
                         print_error "Failed to start instance"
+                        if [ "$DEBUG" = "true" ]; then
+                            print_error "Debug: start_instance returned false"
+                        fi
                         exit 1
                     fi
                 else
