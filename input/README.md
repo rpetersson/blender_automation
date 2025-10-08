@@ -18,4 +18,8 @@ For animations, specify the frame range:
 ./vm_blender_automation.sh -i ./input -o ./output -f animation.blend --frame-start 1 --frame-end 250
 ```
 
+The script automatically treats matching start/end frames as a single still render and uses `-f` under the hood, while wider ranges trigger animation mode with `-s/-e -a`.
+
 Remove unused files to keep uploads fast and conserve space on the VM.
+
+Rendered frames will come back to your local `./output` directory with the pattern `render_####.<FORMAT>` once the job finishes.
