@@ -51,6 +51,10 @@ export VAST_API_KEY="your_key"
 
 # Verbose mode (shows detailed execution)
 ./automate_vast_ai.sh --verbose
+
+# API diagnostic tool (check what instances are available)
+export VAST_API_KEY="your_key"
+./diagnose_vast_api.sh
 ```
 
 ## Environment Variables
@@ -58,8 +62,8 @@ export VAST_API_KEY="your_key"
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `VAST_API_KEY` | ✅ | - | Your Vast.ai API key |
-| `MAX_PRICE` | ❌ | 1.0 | Maximum price per hour (USD) |
-| `MIN_GPU_COUNT` | ❌ | 1 | Minimum number of GPUs |
+| `MAX_PRICE` | ❌ | 2.0 | Maximum price per hour (USD) |
+| `MIN_GPU_COUNT` | ❌ | 0 | Minimum number of GPUs (0 = CPU-only OK) |
 | `UBUNTU_VERSION` | ❌ | 22.04 | Ubuntu version to use |
 
 ## Output
@@ -131,9 +135,16 @@ If you encounter `jq: parse error: Invalid numeric literal`, this usually means:
 
 ### No Suitable Instances Found
 If the script can't find suitable instances:
-1. Increase `MAX_PRICE` (instances might be more expensive)
-2. Decrease `MIN_GPU_COUNT` (fewer GPUs might be available)
-3. Use `--debug` to see what instances are available
+1. **Run the diagnostic tool first**: `./diagnose_vast_api.sh` to see what's available
+2. **Increase `MAX_PRICE`**: Instances might be more expensive than $2.0/hour
+   ```bash
+   export MAX_PRICE="5.0"  # Allow up to $5/hour
+   ```
+3. **Allow CPU-only instances**: Set `MIN_GPU_COUNT=0` if GPU isn't required
+   ```bash
+   export MIN_GPU_COUNT="0"
+   ```
+4. **Check instance availability**: Vast.ai availability changes frequently
 
 ### Connection Issues
 - Ensure your API key is valid: get it from [cloud.vast.ai/api/](https://cloud.vast.ai/api/)

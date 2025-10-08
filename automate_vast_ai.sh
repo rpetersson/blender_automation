@@ -23,8 +23,8 @@ set -e
 
 # Configuration
 VAST_API_KEY="${VAST_API_KEY:-}"
-MAX_PRICE="${MAX_PRICE:-1.0}"  # Maximum price per hour in USD
-MIN_GPU_COUNT="${MIN_GPU_COUNT:-1}"
+MAX_PRICE="${MAX_PRICE:-2.0}"  # Increased default from 1.0 to 2.0
+MIN_GPU_COUNT="${MIN_GPU_COUNT:-0}"  # Changed default from 1 to 0 to include CPU instances
 UBUNTU_VERSION="${UBUNTU_VERSION:-22.04}"
 
 # Colors for output
@@ -54,8 +54,8 @@ show_help() {
     echo ""
     echo "Environment Variables:"
     echo "  VAST_API_KEY    Required: Your Vast.ai API key"
-    echo "  MAX_PRICE       Optional: Maximum price per hour (default: 1.0)"
-    echo "  MIN_GPU_COUNT   Optional: Minimum GPU count (default: 1)"
+    echo "  MAX_PRICE       Optional: Maximum price per hour (default: 2.0)"
+    echo "  MIN_GPU_COUNT   Optional: Minimum GPU count (default: 0)"
     echo "  UBUNTU_VERSION  Optional: Ubuntu version (default: 22.04)"
     echo ""
     echo "Options:"
@@ -144,32 +144,69 @@ find_best_instance() {
     if command -v jq &> /dev/null; then
         if echo "$instances" | jq empty 2>/dev/null; then
             print_status "Valid JSON response received"
-            # Try different possible JSON structures
+            # Try different possible JSON structures with progressively relaxed criteria
             local instance_id=""
+            local criteria_used=""
             
-            # Try: direct array of offers
+            # Try 1: Strict criteria (verified, rentable, within price/GPU limits)
             if [ -z "$instance_id" ]; then
                 instance_id=$(echo "$instances" | jq -r '
-                    .[] | select(.rentable == true and .verified == true) | 
+                    (.[]?, .offers[]?) | 
+                    select(.rentable == true and .verified == true) | 
                     select(.dph_total <= '${MAX_PRICE}') |
                     select(.num_gpus >= '${MIN_GPU_COUNT}') |
                     .id' 2>/dev/null | head -1)
+                criteria_used="strict (verified, rentable, price ≤ \$${MAX_PRICE}, GPUs ≥ ${MIN_GPU_COUNT})"
             fi
             
-            # Try: object with offers array
+            # Try 2: Remove verification requirement
             if [ -z "$instance_id" ] || [ "$instance_id" = "null" ]; then
+                print_warning "No verified instances found, trying unverified..."
                 instance_id=$(echo "$instances" | jq -r '
-                    .offers[]? | select(.rentable == true and .verified == true) | 
+                    (.[]?, .offers[]?) | 
+                    select(.rentable == true) | 
                     select(.dph_total <= '${MAX_PRICE}') |
                     select(.num_gpus >= '${MIN_GPU_COUNT}') |
                     .id' 2>/dev/null | head -1)
+                criteria_used="relaxed (rentable, price ≤ \$${MAX_PRICE}, GPUs ≥ ${MIN_GPU_COUNT})"
             fi
             
-            # Try: just get any rentable instance (relaxed criteria)
+            # Try 3: Increase price limit by 50%
             if [ -z "$instance_id" ] || [ "$instance_id" = "null" ]; then
-                print_warning "No instances found with strict criteria, trying relaxed search..."
+                local relaxed_price=$(echo "${MAX_PRICE} * 1.5" | bc 2>/dev/null || echo "3.0")
+                print_warning "No instances within \$${MAX_PRICE}, trying up to \$${relaxed_price}..."
                 instance_id=$(echo "$instances" | jq -r '
-                    (.[]?, .offers[]?) | select(.rentable == true) | .id' 2>/dev/null | head -1)
+                    (.[]?, .offers[]?) | 
+                    select(.rentable == true) | 
+                    select(.dph_total <= '${relaxed_price}') |
+                    select(.num_gpus >= '${MIN_GPU_COUNT}') |
+                    .id' 2>/dev/null | head -1)
+                criteria_used="price-relaxed (rentable, price ≤ \$${relaxed_price}, GPUs ≥ ${MIN_GPU_COUNT})"
+            fi
+            
+            # Try 4: Remove GPU requirement
+            if [ -z "$instance_id" ] || [ "$instance_id" = "null" ]; then
+                print_warning "No GPU instances found, trying CPU-only..."
+                instance_id=$(echo "$instances" | jq -r '
+                    (.[]?, .offers[]?) | 
+                    select(.rentable == true) | 
+                    select(.dph_total <= '${MAX_PRICE}') |
+                    .id' 2>/dev/null | head -1)
+                criteria_used="CPU-only (rentable, price ≤ \$${MAX_PRICE})"
+            fi
+            
+            # Try 5: Get cheapest rentable instance regardless of other criteria
+            if [ -z "$instance_id" ] || [ "$instance_id" = "null" ]; then
+                print_warning "Selecting cheapest available instance..."
+                instance_id=$(echo "$instances" | jq -r '
+                    (.[]?, .offers[]?) | 
+                    select(.rentable == true and .dph_total != null) |
+                    sort_by(.dph_total) | .[0].id' 2>/dev/null)
+                criteria_used="cheapest available"
+            fi
+            
+            if [ -n "$instance_id" ] && [ "$instance_id" != "null" ]; then
+                print_status "Selected instance using: $criteria_used"
             fi
         else
             print_error "Invalid JSON response from API"
@@ -189,7 +226,23 @@ find_best_instance() {
         print_error "- Max price: \$${MAX_PRICE}/hour"
         print_error "- Min GPU count: ${MIN_GPU_COUNT}"
         print_error "- Verified and rentable: true"
+        
+        # Show available instances for debugging
+        if command -v jq &> /dev/null; then
+            print_error "Available instances:"
+            echo "$instances" | jq -r '
+                (.[]?, .offers[]?) | 
+                select(.id != null) |
+                "ID: \(.id), Price: $\(.dph_total // "N/A")/hr, GPUs: \(.num_gpus // 0), Rentable: \(.rentable // false), Verified: \(.verified // false)"
+            ' 2>/dev/null | head -5 >&2
+        fi
+        
         print_error "Available instances preview: $(echo "$instances" | head -c 500)"
+        print_error ""
+        print_error "Suggestions:"
+        print_error "1. Increase MAX_PRICE (try export MAX_PRICE=\"2.0\")"
+        print_error "2. Decrease MIN_GPU_COUNT (try export MIN_GPU_COUNT=\"0\")"
+        print_error "3. Check if instances are actually rentable"
         exit 1
     fi
     
