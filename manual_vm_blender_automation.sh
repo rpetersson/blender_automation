@@ -15,7 +15,7 @@ CONFIG_FILE="./config.env"
 
 # Blender installation settings
 BLENDER_VERSION="4.5.3"
-BLENDER_DOWNLOAD_URL="https://www.blender.org/download/release/Blender4.5/blender-4.5.3-linux-x64.tar.xz/"
+BLENDER_DOWNLOAD_URL="https://download.blender.org/release/Blender4.5/blender-4.5.3-linux-x64.tar.xz"
 BLENDER_INSTALL_DIR="/opt/blender"
 BLENDER_ARCHIVE="blender-${BLENDER_VERSION}-linux-x64.tar.xz"
 
