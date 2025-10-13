@@ -27,6 +27,7 @@ FRAME_END=1
 COMPRESS_OUTPUT=true
 COMPRESSION_FORMAT="tar.gz"
 ARCHIVE_NAME="blender_output"
+UPDATE_BLENDER=false
 
 # Colors for output
 RED='\033[0;31m'
@@ -137,6 +138,66 @@ scp_download() {
     fi
     
     $scp_cmd -r "$VM_USER@$VM_HOST:$remote_path" "$local_path"
+}
+
+# Update Blender to latest version
+update_blender() {
+    log "Updating Blender to latest version..."
+    
+    # Get the latest Blender 4.2.x version
+    log "Finding latest Blender 4.2.x version..."
+    local latest_version
+    latest_version=$(ssh_execute "curl -s https://download.blender.org/release/Blender4.2/ | grep -o 'blender-4\.2\.[0-9]\+-linux-x64\.tar\.xz' | sort -V | tail -1")
+    
+    if [[ -z "$latest_version" ]]; then
+        error "Could not determine latest Blender version"
+        exit 1
+    fi
+    
+    log "Latest version found: $latest_version"
+    
+    # Check if this version is already installed
+    local current_blender_path=""
+    current_blender_path=$(check_blender 2>/dev/null || echo "")
+    
+    if [[ -n "$current_blender_path" ]]; then
+        local current_version
+        current_version=$(ssh_execute "$current_blender_path -b --version 2>&1 | head -n 1" || echo "")
+        log "Current installation: $current_version"
+        
+        # Extract version number from current installation
+        if echo "$current_version" | grep -q "$latest_version"; then
+            log "Blender is already up to date with $latest_version"
+            return 0
+        fi
+    fi
+    
+    # Download and install the latest version
+    log "Downloading and installing $latest_version..."
+    
+    # Create installation directory
+    ssh_execute "mkdir -p /opt/blender"
+    
+    # Download and extract
+    ssh_execute "cd /tmp && curl -L -o '$latest_version' 'https://download.blender.org/release/Blender4.2/$latest_version'"
+    ssh_execute "cd /opt && tar -xf '/tmp/$latest_version' --strip-components=1 -C blender"
+    
+    # Create symlink for easy access
+    ssh_execute "ln -sf /opt/blender/blender /usr/local/bin/blender"
+    
+    # Clean up downloaded file
+    ssh_execute "rm -f '/tmp/$latest_version'"
+    
+    # Verify installation
+    local new_version
+    new_version=$(ssh_execute "/opt/blender/blender -b --version 2>&1 | head -n 1" || echo "")
+    
+    if [[ -n "$new_version" ]]; then
+        log "Blender successfully updated: $new_version"
+    else
+        error "Blender update failed - could not verify installation"
+        exit 1
+    fi
 }
 
 # Check Blender installation
@@ -545,6 +606,7 @@ Options:
     --archive-name NAME     Name for the compressed archive (default: blender_output)
     --extract               Extract compressed archive locally after download
     --test-ssh              Test SSH connection only
+    --update-blender        Update Blender to latest 4.2.x version before use
     --no-cleanup            Don't cleanup remote files
 
 Examples:
@@ -554,6 +616,7 @@ Examples:
     $0 -i ./input -o ./output -f animation.blend --compress --extract
     $0 -i ./input -o ./output -f scene.blend -p 2222  # Custom SSH port
     $0 --test-ssh -p 2222  # Test SSH connection on custom port
+    $0 --update-blender -i ./input -o ./output -f scene.blend  # Update Blender first
 
 EOF
 }
@@ -618,6 +681,10 @@ parse_arguments() {
                 TEST_SSH_ONLY=true
                 shift
                 ;;
+            --update-blender)
+                UPDATE_BLENDER=true
+                shift
+                ;;
             --no-cleanup)
                 CLEANUP_REMOTE=false
                 shift
@@ -655,6 +722,11 @@ main() {
         exit 0
     fi
     
+    # Update Blender if requested
+    if [[ "$UPDATE_BLENDER" == "true" ]]; then
+        update_blender
+    fi
+
     # Execute the workflow (no Blender installation)
     prepare_remote_directory
     upload_files
