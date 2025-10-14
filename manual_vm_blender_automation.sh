@@ -313,10 +313,92 @@ run_blender() {
         log "═══════════════════════════════════════════════════════════"
         log "Processing file $file_count of $total_files: $(basename "$blend_path")"
         log "═══════════════════════════════════════════════════════════"
+        
+        # Prompt for frame range for this specific file
+        prompt_frame_range_for_file "$(basename "$blend_path")"
+        
         render_blend_file "$blend_path" "$blender_exec"
     done
     
     log "All .blend files processed successfully!"
+}
+
+# Prompt user for frame range for a specific file
+prompt_frame_range_for_file() {
+    local filename="$1"
+    
+    echo ""
+    log "Frame Range for: $filename"
+    info "Default frame range: ${FRAME_START} to ${FRAME_END}"
+    echo ""
+    
+    # Local variables for this file's frame range
+    local file_frame_start=$FRAME_START
+    local file_frame_end=$FRAME_END
+    
+    # Get start frame
+    while true; do
+        read -p "Enter start frame [$file_frame_start]: " input_start
+        # Use default if empty
+        if [[ -z "$input_start" ]]; then
+            input_start=$file_frame_start
+        fi
+        # Validate it's a number
+        if [[ "$input_start" =~ ^[0-9]+$ ]]; then
+            file_frame_start=$input_start
+            break
+        else
+            error "Please enter a valid number"
+        fi
+    done
+    
+    # Get end frame
+    while true; do
+        read -p "Enter end frame [$file_frame_end]: " input_end
+        # Use default if empty
+        if [[ -z "$input_end" ]]; then
+            input_end=$file_frame_end
+        fi
+        # Validate it's a number and >= start frame
+        if [[ "$input_end" =~ ^[0-9]+$ ]]; then
+            if (( input_end >= file_frame_start )); then
+                file_frame_end=$input_end
+                break
+            else
+                error "End frame must be >= start frame ($file_frame_start)"
+            fi
+        else
+            error "Please enter a valid number"
+        fi
+    done
+    
+    local total_frames=$((file_frame_end - file_frame_start + 1))
+    echo ""
+    info "Will render frames ${file_frame_start} to ${file_frame_end} (${total_frames} frames)"
+    
+    # Final confirmation
+    while true; do
+        read -p "Proceed with this file? (y/n): " yn
+        case $yn in
+            [Yy]* )
+                # Update global variables for this file's render
+                FRAME_START=$file_frame_start
+                FRAME_END=$file_frame_end
+                break
+                ;;
+            [Nn]* )
+                warning "Skipping $(basename "$filename")"
+                # Set frame range to skip (start > end will be caught)
+                FRAME_START=1
+                FRAME_END=0
+                break
+                ;;
+            * )
+                echo "Please answer yes (y) or no (n)."
+                ;;
+        esac
+    done
+    echo ""
 }
 
 # Render a single blend file
@@ -324,6 +406,12 @@ render_blend_file() {
     local blend_path="$1"
     local blender_exec="$2"
     local blend_filename=$(basename "$blend_path" .blend)
+    
+    # Check if user chose to skip this file
+    if (( FRAME_END < FRAME_START )); then
+        warning "Skipping $blend_filename (user cancelled)"
+        return 0
+    fi
     
     # Create output subdirectory for this blend file to keep renders organized
     local file_output_dir="$REMOTE_WORK_DIR/output/$blend_filename"
@@ -611,6 +699,7 @@ Options:
     -i, --input DIR         Local input directory
     -o, --output DIR        Local output directory
     -f, --file FILE         Blender file to render (optional - auto-detects all .blend files if not specified)
+    --ssh "STRING"          Parse SSH connection string (e.g., "ssh -p 56297 root@157.157.221.29")
     -p, --port PORT         SSH port (default: 22)
     --frame-start N         Start frame (default: 1)
     --frame-end N           End frame (default: 1)
@@ -623,6 +712,9 @@ Options:
     --no-cleanup            Don't cleanup remote files
 
 Examples:
+    # Use SSH connection string from Vast.ai (easiest method)
+    $0 --ssh "ssh -p 56297 root@157.157.221.29" -i ./input -o ./output
+    
     # Render all .blend files in input directory automatically
     $0 -i ./input -o ./output
     
@@ -640,6 +732,49 @@ Examples:
     $0 --test-ssh -p 2222  # Test SSH connection on custom port
 
 EOF
+}
+
+# Parse SSH connection string
+parse_ssh_string() {
+    local ssh_string="$1"
+    
+    # Remove leading "ssh" if present
+    ssh_string="${ssh_string#ssh }"
+    ssh_string="${ssh_string#ssh}"
+    ssh_string="${ssh_string## }"  # trim leading spaces
+    
+    # Extract port if -p flag is present
+    if [[ "$ssh_string" =~ -p[[:space:]]+([0-9]+) ]]; then
+        VM_PORT="${BASH_REMATCH[1]}"
+        # Remove -p PORT from string
+        ssh_string=$(echo "$ssh_string" | sed -E 's/-p[[:space:]]+[0-9]+[[:space:]]*//g')
+    fi
+    
+    # Extract -i key if present
+    if [[ "$ssh_string" =~ -i[[:space:]]+([^[:space:]]+) ]]; then
+        VM_KEY="${BASH_REMATCH[1]}"
+        # Remove -i KEY from string
+        ssh_string=$(echo "$ssh_string" | sed -E 's/-i[[:space:]]+[^[:space:]]+[[:space:]]*//g')
+    fi
+    
+    # Now parse USER@HOST
+    if [[ "$ssh_string" =~ ([^@]+)@([^[:space:]]+) ]]; then
+        VM_USER="${BASH_REMATCH[1]}"
+        VM_HOST="${BASH_REMATCH[2]}"
+    else
+        error "Invalid SSH connection string format"
+        error "Expected format: 'ssh -p PORT USER@HOST' or 'USER@HOST'"
+        error "Example: 'ssh -p 56297 root@157.157.221.29'"
+        exit 1
+    fi
+    
+    info "Parsed SSH connection:"
+    info "  Host: $VM_HOST"
+    info "  User: $VM_USER"
+    info "  Port: $VM_PORT"
+    if [[ -n "$VM_KEY" ]]; then
+        info "  Key: $VM_KEY"
+    fi
 }
 
 # Parse command line arguments
@@ -668,6 +803,11 @@ parse_arguments() {
                 ;;
             -p|--port)
                 VM_PORT="$2"
+                shift 2
+                ;;
+            --ssh)
+                # Parse SSH connection string: ssh -p PORT USER@HOST or ssh USER@HOST:PORT
+                parse_ssh_string "$2"
                 shift 2
                 ;;
             --frame-start)
