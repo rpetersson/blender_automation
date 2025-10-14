@@ -95,9 +95,9 @@ load_config() {
 test_ssh_connection() {
     log "Testing SSH connection to $VM_USER@$VM_HOST:$VM_PORT..."
     
-    local ssh_cmd="ssh -p $VM_PORT"
+    local ssh_cmd="ssh -p $VM_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
     if [[ -n "$VM_KEY" ]]; then
-        ssh_cmd="ssh -i $VM_KEY -p $VM_PORT"
+        ssh_cmd="ssh -i $VM_KEY -p $VM_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
     fi
     
     if $ssh_cmd -o ConnectTimeout=10 -o BatchMode=yes "$VM_USER@$VM_HOST" "echo 'SSH connection successful'" 2>/dev/null; then
@@ -111,10 +111,10 @@ test_ssh_connection() {
 # Execute command on remote VM
 ssh_execute() {
     local command="$1"
-    local ssh_cmd="ssh -p $VM_PORT"
+    local ssh_cmd="ssh -p $VM_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
     
     if [[ -n "$VM_KEY" ]]; then
-        ssh_cmd="ssh -i $VM_KEY -p $VM_PORT"
+        ssh_cmd="ssh -i $VM_KEY -p $VM_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
     fi
     
     $ssh_cmd "$VM_USER@$VM_HOST" "$command"
@@ -124,10 +124,10 @@ ssh_execute() {
 scp_upload() {
     local local_path="$1"
     local remote_path="$2"
-    local scp_cmd="scp -P $VM_PORT"
+    local scp_cmd="scp -P $VM_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
     
     if [[ -n "$VM_KEY" ]]; then
-        scp_cmd="scp -i $VM_KEY -P $VM_PORT"
+        scp_cmd="scp -i $VM_KEY -P $VM_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
     fi
     
     $scp_cmd -r "$local_path" "$VM_USER@$VM_HOST:$remote_path"
@@ -137,10 +137,10 @@ scp_upload() {
 scp_download() {
     local remote_path="$1"
     local local_path="$2"
-    local scp_cmd="scp -P $VM_PORT"
+    local scp_cmd="scp -P $VM_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
     
     if [[ -n "$VM_KEY" ]]; then
-        scp_cmd="scp -i $VM_KEY -P $VM_PORT"
+        scp_cmd="scp -i $VM_KEY -P $VM_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
     fi
     
     $scp_cmd -r "$VM_USER@$VM_HOST:$remote_path" "$local_path"
@@ -261,13 +261,6 @@ upload_files() {
 run_blender() {
     log "Running Blender in background mode..."
     
-    # Validate that we have a blend file to render
-    if [[ -z "$BLENDER_FILE" ]]; then
-        error "BLENDER_FILE must be specified"
-        info "Use -f to specify a .blend file"
-        exit 1
-    fi
-    
     # Use manually installed Blender
     if ! ssh_execute "test -f ${BLENDER_INSTALL_DIR}/blender" 2>/dev/null; then
         error "Blender not found at ${BLENDER_INSTALL_DIR}/blender. Run installation first."
@@ -277,17 +270,74 @@ run_blender() {
     local blender_exec="${BLENDER_INSTALL_DIR}/blender"
     log "Using Blender ${BLENDER_VERSION} from ${BLENDER_INSTALL_DIR}"
 
-    local blend_path
-    if [[ "$BLENDER_FILE" == /* ]]; then
-        blend_path="$BLENDER_FILE"
+    # Auto-detect .blend files if BLENDER_FILE is not specified
+    local -a blend_files=()
+    if [[ -z "$BLENDER_FILE" ]]; then
+        log "Auto-detecting .blend files in input directory..."
+        local blend_list
+        blend_list=$(ssh_execute "find $REMOTE_WORK_DIR/input -maxdepth 2 -type f -name '*.blend' ! -name '*.blend1' 2>/dev/null | sort || true")
+        
+        if [[ -z "$blend_list" ]]; then
+            error "No .blend files found in $REMOTE_WORK_DIR/input"
+            info "Please upload .blend files to your input directory or use -f to specify a file"
+            exit 1
+        fi
+        
+        while IFS= read -r line; do
+            if [[ -n "$line" ]]; then
+                blend_files+=("$line")
+            fi
+        done <<< "$blend_list"
+        
+        log "Found ${#blend_files[@]} .blend file(s) to render:"
+        for bf in "${blend_files[@]}"; do
+            info "  - $(basename "$bf")"
+        done
     else
-        blend_path="input/$BLENDER_FILE"
+        # Single file specified via -f flag
+        local blend_path
+        if [[ "$BLENDER_FILE" == /* ]]; then
+            blend_path="$BLENDER_FILE"
+        else
+            blend_path="$REMOTE_WORK_DIR/input/$BLENDER_FILE"
+        fi
+        blend_files=("$blend_path")
+        log "Rendering specified file: $(basename "$blend_path")"
     fi
+    
+    # Render each .blend file
+    local file_count=0
+    local total_files=${#blend_files[@]}
+    for blend_path in "${blend_files[@]}"; do
+        file_count=$((file_count + 1))
+        log "═══════════════════════════════════════════════════════════"
+        log "Processing file $file_count of $total_files: $(basename "$blend_path")"
+        log "═══════════════════════════════════════════════════════════"
+        render_blend_file "$blend_path" "$blender_exec"
+    done
+    
+    log "All .blend files processed successfully!"
+}
 
-    local output_pattern="$REMOTE_WORK_DIR/output/render_####"
+# Render a single blend file
+render_blend_file() {
+    local blend_path="$1"
+    local blender_exec="$2"
+    local blend_filename=$(basename "$blend_path" .blend)
+    
+    # Create output subdirectory for this blend file to keep renders organized
+    local file_output_dir="$REMOTE_WORK_DIR/output/$blend_filename"
+    ssh_execute "mkdir -p '$file_output_dir'" || {
+        error "Failed to create output directory for $blend_filename"
+        exit 1
+    }
+    
+    local output_pattern="$file_output_dir/frame_####"
+    
+    log "Output will be saved to: $file_output_dir"
     
     # Build base command without environment variables (added per GPU later)
-    local base_cmd="cd $REMOTE_WORK_DIR && $blender_exec -b '$blend_path' -E CYCLES -o '$output_pattern' -F $OUTPUT_FORMAT"
+    local base_cmd="$blender_exec -b '$blend_path' -E CYCLES -o '$output_pattern' -F $OUTPUT_FORMAT"
 
     # Detect available NVIDIA GPUs (if any)
     local gpu_raw
@@ -329,7 +379,7 @@ run_blender() {
 
             # Build render command with environment variables for Vulkan fix
             # Use 'env' command to ensure environment variables are set properly over SSH
-            local render_cmd="cd $REMOTE_WORK_DIR && env BLENDER_USD_DISABLE_HYDRA=1 CUDA_VISIBLE_DEVICES=$gpu $blender_exec -b '$blend_path' -E CYCLES -o '$output_pattern' -F $OUTPUT_FORMAT"
+            local render_cmd="cd $REMOTE_WORK_DIR && env BLENDER_USD_DISABLE_HYDRA=1 CUDA_VISIBLE_DEVICES=$gpu $base_cmd"
             if (( range_end > range_start )); then
                 render_cmd="$render_cmd -s $range_start -e $range_end -a"
             else
@@ -367,8 +417,8 @@ run_blender() {
         return
     fi
 
-    # Single GPU (or CPU) path
-    local render_cmd="$base_cmd"
+    # Single GPU path
+    local render_cmd="cd $REMOTE_WORK_DIR && env BLENDER_USD_DISABLE_HYDRA=1 CUDA_VISIBLE_DEVICES=${gpu_indices[0]} $base_cmd"
     if (( total_frames > 1 )); then
         render_cmd="$render_cmd -s $FRAME_START -e $FRAME_END -a"
     else
@@ -376,9 +426,6 @@ run_blender() {
     fi
 
     if (( gpu_count >= 1 )); then
-        # Pin to the first GPU for consistency, add environment variables for Vulkan fix
-        # Use 'env' command to ensure environment variables are set properly over SSH
-        render_cmd="env BLENDER_USD_DISABLE_HYDRA=1 CUDA_VISIBLE_DEVICES=${gpu_indices[0]} $render_cmd"
         render_cmd="$render_cmd -- --cycles-device OPTIX"
         log "Detected GPU ${gpu_indices[0]}; assigning render with OPTIX"
     else
@@ -391,12 +438,12 @@ run_blender() {
     info "Executing: $render_cmd"
 
     if ! ssh_execute "$render_cmd"; then
-        error "Blender execution failed"
+        error "Blender render failed for $(basename "$blend_path")"
         error "Check the output above for details"
         exit 1
     fi
 
-    log "Blender execution completed"
+    log "Successfully rendered: $(basename "$blend_path")"
 }
 
 # Download output files
@@ -563,7 +610,7 @@ Options:
     -c, --config FILE       Specify configuration file (default: ./config.env)
     -i, --input DIR         Local input directory
     -o, --output DIR        Local output directory
-    -f, --file FILE         Blender file to render
+    -f, --file FILE         Blender file to render (optional - auto-detects all .blend files if not specified)
     -p, --port PORT         SSH port (default: 22)
     --frame-start N         Start frame (default: 1)
     --frame-end N           End frame (default: 1)
@@ -576,11 +623,20 @@ Options:
     --no-cleanup            Don't cleanup remote files
 
 Examples:
+    # Render all .blend files in input directory automatically
+    $0 -i ./input -o ./output
+    
+    # Render all .blend files with frame range
+    $0 -i ./input -o ./output --frame-start 1 --frame-end 250
+    
+    # Render a specific .blend file
     $0 -i ./input -o ./output -f scene.blend
-    $0 -i ./input -o ./output -f animation.blend --frame-start 1 --frame-end 250
-    $0 -i ./input -o ./output -f scene.blend --compress --compression-format zip
-    $0 -i ./input -o ./output -f animation.blend --compress --extract
-    $0 -i ./input -o ./output -f scene.blend -p 2222  # Custom SSH port
+    
+    # Render with compression
+    $0 -i ./input -o ./output --compress --compression-format zip
+    
+    # Custom SSH port
+    $0 -i ./input -o ./output -p 2222
     $0 --test-ssh -p 2222  # Test SSH connection on custom port
 
 EOF
