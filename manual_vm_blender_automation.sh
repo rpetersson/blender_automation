@@ -68,11 +68,23 @@ load_config() {
         exit 1
     fi
     
+    # Save any variables already set via command line (e.g., --ssh flag)
+    local SAVED_VM_HOST="$VM_HOST"
+    local SAVED_VM_USER="$VM_USER"
+    local SAVED_VM_PORT="$VM_PORT"
+    local SAVED_VM_KEY="$VM_KEY"
+    
     source "$CONFIG_FILE"
+    
+    # Restore command-line values if they were set
+    [[ -n "$SAVED_VM_HOST" ]] && VM_HOST="$SAVED_VM_HOST"
+    [[ -n "$SAVED_VM_USER" ]] && VM_USER="$SAVED_VM_USER"
+    [[ -n "$SAVED_VM_PORT" ]] && VM_PORT="$SAVED_VM_PORT"
+    [[ -n "$SAVED_VM_KEY" ]] && VM_KEY="$SAVED_VM_KEY"
     
     # Validate required variables
     if [[ -z "$VM_HOST" || -z "$VM_USER" ]]; then
-        error "VM_HOST and VM_USER must be set in config.env"
+        error "VM_HOST and VM_USER must be set in config.env or via --ssh flag"
         exit 1
     fi
     
@@ -146,6 +158,20 @@ scp_download() {
     $scp_cmd -r "$VM_USER@$VM_HOST:$remote_path" "$local_path"
 }
 
+# Detect if we need sudo (check if we're root)
+setup_sudo() {
+    local current_user
+    current_user=$(ssh_execute "whoami" 2>/dev/null || echo "")
+    
+    if [[ "$current_user" == "root" ]]; then
+        SUDO_CMD=""
+        log "Running as root user, sudo not needed"
+    else
+        SUDO_CMD="sudo"
+        log "Running as non-root user ($current_user), will use sudo for privileged operations"
+    fi
+}
+
 # Install Blender on VM
 install_blender() {
     log "Installing Blender ${BLENDER_VERSION} manually from official download..."
@@ -166,7 +192,7 @@ install_blender() {
 
     # Install required dependencies
     log "Installing required dependencies..."
-    ssh_execute "apt-get update && apt-get install -y wget xz-utils libxi6 libxxf86vm1 libxfixes3 libxrender1 libgl1" || {
+    ssh_execute "$SUDO_CMD apt-get update && $SUDO_CMD apt-get install -y wget xz-utils libxi6 libxxf86vm1 libxfixes3 libxrender1 libgl1" || {
         error "Failed to install dependencies"
         exit 1
     }
@@ -187,14 +213,14 @@ install_blender() {
 
     # Move to installation directory
     log "Installing Blender to ${BLENDER_INSTALL_DIR}..."
-    ssh_execute "mkdir -p $(dirname ${BLENDER_INSTALL_DIR})" || {
+    ssh_execute "$SUDO_CMD mkdir -p $(dirname ${BLENDER_INSTALL_DIR})" || {
         error "Failed to create installation directory"
         exit 1
     }
     
     # Find the extracted directory (it should be blender-4.5.3-linux-x64)
     local extracted_dir="blender-${BLENDER_VERSION}-linux-x64"
-    ssh_execute "mv /tmp/${extracted_dir} ${BLENDER_INSTALL_DIR}" || {
+    ssh_execute "$SUDO_CMD mv /tmp/${extracted_dir} ${BLENDER_INSTALL_DIR}" || {
         error "Failed to move Blender to installation directory"
         exit 1
     }
@@ -203,7 +229,7 @@ install_blender() {
     ssh_execute "rm -f /tmp/${BLENDER_ARCHIVE}" 2>/dev/null || true
 
     # Create symbolic link for easier access (optional)
-    ssh_execute "ln -sf ${BLENDER_INSTALL_DIR}/blender /usr/local/bin/blender" 2>/dev/null || true
+    ssh_execute "$SUDO_CMD ln -sf ${BLENDER_INSTALL_DIR}/blender /usr/local/bin/blender" 2>/dev/null || true
 
     # Verify installation
     local detected_version
@@ -878,6 +904,9 @@ main() {
         log "SSH test completed successfully"
         exit 0
     fi
+    
+    # Detect if we need sudo
+    setup_sudo
     
     # Execute the workflow
     install_blender
