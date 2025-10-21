@@ -59,6 +59,287 @@ info() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
 
+# Progress bar functions
+draw_progress_bar() {
+    local current=$1
+    local total=$2
+    local width=$3
+    local label=$4
+    
+    if (( total == 0 )); then
+        total=1
+    fi
+    
+    local percent=$(( current * 100 / total ))
+    local filled=$(( current * width / total ))
+    local empty=$(( width - filled ))
+    
+    # Create the bar
+    local bar=""
+    for ((i = 0; i < filled; i++)); do
+        bar="${bar}█"
+    done
+    for ((i = 0; i < empty; i++)); do
+        bar="${bar}░"
+    done
+    
+    printf "${BLUE}%-20s${NC} ${GREEN}%s${NC} ${YELLOW}%3d%%${NC} (%d/%d)\n" "$label" "$bar" "$percent" "$current" "$total"
+}
+
+# Parse Blender timing output and extract frame render time
+# Input: "Time: 00:18.05 (Saving: 00:00.29)"
+# Returns time in seconds (e.g., 18.05)
+parse_blender_time() {
+    local time_str="$1"
+    local minutes=0
+    local seconds=0
+    
+    # Extract MM:SS.SS format
+    if [[ "$time_str" =~ ([0-9]+):([0-9]+\.[0-9]+) ]]; then
+        minutes="${BASH_REMATCH[1]}"
+        seconds="${BASH_REMATCH[2]}"
+        # Convert to total seconds
+        echo "scale=2; $minutes * 60 + $seconds" | bc 2>/dev/null || echo "0"
+    else
+        echo "0"
+    fi
+}
+
+# Track render statistics for a single GPU
+# Creates temp files to store frame times and statistics
+init_gpu_stats() {
+    local gpu_id=$1
+    local temp_dir="/tmp/blender_stats_$$"
+    mkdir -p "$temp_dir"
+    
+    # Initialize stats file
+    echo "0" > "$temp_dir/gpu_${gpu_id}_frame_count"
+    echo "0" > "$temp_dir/gpu_${gpu_id}_total_time"
+    echo "0" > "$temp_dir/gpu_${gpu_id}_min_time"
+    echo "99999" > "$temp_dir/gpu_${gpu_id}_max_time"
+    echo "" > "$temp_dir/gpu_${gpu_id}_times"
+    
+    echo "$temp_dir"
+}
+
+# Update GPU render statistics after each frame
+update_gpu_stats() {
+    local stats_dir=$1
+    local gpu_id=$2
+    local frame_number=$3
+    local render_time=$4
+    
+    if [[ ! -d "$stats_dir" ]]; then
+        return
+    fi
+    
+    local frame_count_file="$stats_dir/gpu_${gpu_id}_frame_count"
+    local total_time_file="$stats_dir/gpu_${gpu_id}_total_time"
+    local min_time_file="$stats_dir/gpu_${gpu_id}_min_time"
+    local max_time_file="$stats_dir/gpu_${gpu_id}_max_time"
+    local times_file="$stats_dir/gpu_${gpu_id}_times"
+    
+    # Read current values
+    local frame_count=$(cat "$frame_count_file" 2>/dev/null || echo "0")
+    local total_time=$(cat "$total_time_file" 2>/dev/null || echo "0")
+    local min_time=$(cat "$min_time_file" 2>/dev/null || echo "0")
+    local max_time=$(cat "$max_time_file" 2>/dev/null || echo "99999")
+    
+    # Update counters
+    frame_count=$((frame_count + 1))
+    total_time=$(echo "scale=2; $total_time + $render_time" | bc 2>/dev/null || echo "$total_time")
+    
+    # Update min/max
+    if (( $(echo "$render_time < $min_time" | bc -l 2>/dev/null) )); then
+        min_time=$render_time
+    fi
+    if (( $(echo "$render_time > $max_time" | bc -l 2>/dev/null) )); then
+        max_time=$render_time
+    fi
+    
+    # Write back
+    echo "$frame_count" > "$frame_count_file"
+    echo "$total_time" > "$total_time_file"
+    echo "$min_time" > "$min_time_file"
+    echo "$max_time" > "$max_time_file"
+    echo "$frame_number:$render_time" >> "$times_file"
+}
+
+# Get average render time per frame
+get_average_frame_time() {
+    local stats_dir=$1
+    local gpu_id=$2
+    
+    if [[ ! -d "$stats_dir" ]]; then
+        echo "0"
+        return
+    fi
+    
+    local frame_count=$(cat "$stats_dir/gpu_${gpu_id}_frame_count" 2>/dev/null || echo "0")
+    local total_time=$(cat "$stats_dir/gpu_${gpu_id}_total_time" 2>/dev/null || echo "0")
+    
+    if (( frame_count > 0 )); then
+        echo "scale=2; $total_time / $frame_count" | bc 2>/dev/null || echo "0"
+    else
+        echo "0"
+    fi
+}
+
+# Format time string MM:SS.SS from seconds
+format_time_from_seconds() {
+    local seconds=$1
+    local minutes=0
+    
+    # Handle decimal seconds
+    if [[ "$seconds" =~ ^([0-9]+)(\..*)?$ ]]; then
+        local int_part="${BASH_REMATCH[1]}"
+        minutes=$((int_part / 60))
+        seconds=$((int_part % 60))
+        printf "%02d:%05.2f" "$minutes" "$seconds"
+    else
+        echo "00:00.00"
+    fi
+}
+
+# Calculate ETA based on remaining frames and average time
+calculate_eta() {
+    local remaining_frames=$1
+    local avg_time_per_frame=$2
+    
+    if (( remaining_frames <= 0 )); then
+        echo "0"
+        return
+    fi
+    
+    local eta_seconds=$(echo "scale=0; $remaining_frames * $avg_time_per_frame" | bc 2>/dev/null || echo "0")
+    echo "$eta_seconds"
+}
+
+# Monitor GPU progress and display live progress bars
+monitor_gpu_progress() {
+    local -a pids=("$@")
+    local pid_count=${#pids[@]}
+    
+    if (( pid_count == 0 )); then
+        return 0
+    fi
+    
+    # Store initial frame counts for each GPU
+    local -a initial_frames=()
+    local -a gpu_labels=()
+    local total_all_frames=0
+    local completed_all_frames=0
+    
+    # Parse labels from ssh_execute output
+    while IFS= read -r line; do
+        if [[ "$line" =~ GPU\ ([0-9]+)\ \(frames\ ([0-9]+)-([0-9]+)\) ]]; then
+            local gpu_id="${BASH_REMATCH[1]}"
+            local start_frame="${BASH_REMATCH[2]}"
+            local end_frame="${BASH_REMATCH[3]}"
+            local frame_count=$(( end_frame - start_frame + 1 ))
+            
+            initial_frames+=("$start_frame:$end_frame:$frame_count")
+            gpu_labels+=("GPU $gpu_id")
+            total_all_frames=$(( total_all_frames + frame_count ))
+        fi
+    done
+    
+    # Monitor processes
+    local all_done=false
+    local check_interval=5  # Check every 5 seconds
+    
+    while ! $all_done; do
+        all_done=true
+        local completed_count=0
+        
+        # Check if all processes are still running
+        for pid in "${pids[@]}"; do
+            if ! kill -0 "$pid" 2>/dev/null; then
+                ((completed_count++))
+            else
+                all_done=false
+            fi
+        done
+        
+        # Clear screen and show header
+        clear
+        echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+        echo -e "${GREEN}GPU Render Progress Monitor${NC}"
+        echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+        echo ""
+        
+        # Display individual GPU progress bars
+        for i in "${!pids[@]}"; do
+            draw_progress_bar "$i" "${#pids[@]}" 25 "${gpu_labels[$i]}"
+        done
+        
+        echo ""
+        echo -e "${BLUE}───────────────────────────────────────────────────────${NC}"
+        
+        # Display overall progress
+        local overall_percent=$(( pid_count > 0 ? completed_count * 100 / pid_count : 0 ))
+        printf "${GREEN}Overall:${NC} %d/%d GPUs completed (${overall_percent}%%)\n" "$completed_count" "$pid_count"
+        
+        echo ""
+        echo -e "${YELLOW}[ESC to background, Ctrl+C to cancel]${NC}"
+        echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+        
+        if ! $all_done; then
+            sleep "$check_interval"
+        fi
+    done
+    
+    # Final status
+    echo ""
+    echo -e "${GREEN}✓ All GPU renders completed!${NC}"
+    echo ""
+}
+
+# Enhanced progress indicator with timing statistics
+show_render_progress_with_stats() {
+    local pid=$1
+    local label=$2
+    local gpu_id=$3
+    local start_frame=$4
+    local end_frame=$5
+    local stats_dir=$6
+    
+    local spinner=( '⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏' )
+    local idx=0
+    local total_frames=$((end_frame - start_frame + 1))
+    
+    while kill -0 "$pid" 2>/dev/null; do
+        local avg_time=$(get_average_frame_time "$stats_dir" "$gpu_id")
+        local frames_rendered=$(cat "$stats_dir/gpu_${gpu_id}_frame_count" 2>/dev/null || echo "0")
+        local remaining=$((total_frames - frames_rendered))
+        local eta_sec=$(calculate_eta "$remaining" "$avg_time")
+        local eta_formatted=$(format_time_from_seconds "$eta_sec")
+        
+        printf "\r${BLUE}${spinner[$idx]}${NC} %s | Frames: %d/%d | Avg: %.2fs | ETA: %s" \
+            "$label" "$frames_rendered" "$total_frames" "$avg_time" "$eta_formatted"
+        
+        idx=$(( (idx + 1) % ${#spinner[@]} ))
+        sleep 1
+    done
+    printf "\r${GREEN}✓${NC} %s - Completed in %.2f seconds\n" "$label" "$(cat "$stats_dir/gpu_${gpu_id}_total_time" 2>/dev/null || echo 0)"
+}
+
+# Simple inline progress indicator for single GPU (backward compatible)
+show_render_progress() {
+    local pid=$1
+    local label=$2
+    local spinner=( '⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏' )
+    local idx=0
+    
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r${BLUE}${spinner[$idx]}${NC} $label"
+        idx=$(( (idx + 1) % ${#spinner[@]} ))
+        sleep 0.1
+    done
+    printf "\r${GREEN}✓${NC} $label completed\n"
+}
+
+
 # Load configuration
 load_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -502,22 +783,84 @@ render_blend_file() {
             render_cmd="$render_cmd -- --cycles-device OPTIX"
 
             info "Launching GPU $gpu: frames $range_start-$range_end"
-            ssh_execute "$render_cmd" &
+            
+            # Initialize stats for this GPU
+            local stats_dir=$(init_gpu_stats "$gpu")
+            
+            # Execute render with output capture
+            ssh_execute "$render_cmd" > "/tmp/blender_render_${gpu}_$$.log" 2>&1 &
             local pid=$!
             pids+=("$pid")
             labels+=("GPU $gpu (frames $range_start-$range_end)")
+            
+            # Store stats directory and frame range for later parsing
+            echo "$stats_dir" > "/tmp/gpu_${gpu}_stats_dir_$$"
+            echo "$gpu" > "/tmp/gpu_${gpu}_id_$$"
+            echo "$range_start" > "/tmp/gpu_${gpu}_start_$$"
+            echo "$range_end" > "/tmp/gpu_${gpu}_end_$$"
 
             chunk_start=$((range_end + 1))
         done
 
+        # Show progress bars while rendering
+        echo ""
+        info "Rendering on $gpu_count GPUs..."
+        echo ""
+        
         local failures=0
+        
+        # Monitor GPU progress with visual feedback and stats
+        (
+            for idx in "${!pids[@]}"; do
+                local pid=${pids[$idx]}
+                local label=${labels[$idx]}
+                local gpu_id
+                gpu_id=$(cat "/tmp/gpu_${idx}_id_$$" 2>/dev/null || echo "$idx")
+                local stats_dir
+                stats_dir=$(cat "/tmp/gpu_${gpu_id}_stats_dir_$$" 2>/dev/null)
+                local range_start
+                range_start=$(cat "/tmp/gpu_${gpu_id}_start_$$" 2>/dev/null || echo "0")
+                local range_end
+                range_end=$(cat "/tmp/gpu_${gpu_id}_end_$$" 2>/dev/null || echo "0")
+                
+                show_render_progress_with_stats "$pid" "$label" "$gpu_id" "$range_start" "$range_end" "$stats_dir" &
+            done
+            wait
+        )
+        
+        echo ""
+        info "Parsing render timing statistics..."
+        
+        # Parse timing information from log files
+        for gpu in "${gpu_indices[@]}"; do
+            if [[ -f "/tmp/blender_render_${gpu}_$$.log" ]]; then
+                while IFS= read -r line; do
+                    # Look for timing lines like: "Time: 00:18.05 (Saving: 00:00.29)"
+                    if [[ "$line" =~ Time:\ ([0-9:\.]+) ]]; then
+                        local time_str="${BASH_REMATCH[1]}"
+                        local time_sec
+                        time_sec=$(parse_blender_time "Time: $time_str")
+                        local stats_dir
+                        stats_dir=$(cat "/tmp/gpu_${gpu}_stats_dir_$$" 2>/dev/null)
+                        if [[ -n "$stats_dir" ]]; then
+                            update_gpu_stats "$stats_dir" "$gpu" "0" "$time_sec"
+                        fi
+                    fi
+                done < "/tmp/blender_render_${gpu}_$$.log"
+            fi
+        done
+        
+        echo ""
+        info "Waiting for all GPU processes to complete..."
+        
+        # Wait for all processes and collect exit codes
         for idx in "${!pids[@]}"; do
             local pid=${pids[$idx]}
             local label=${labels[$idx]}
             if wait "$pid"; then
-                log "$label completed"
+                log "✓ $label completed"
             else
-                error "$label failed"
+                error "✗ $label failed"
                 failures=$((failures + 1))
             fi
         done
@@ -526,6 +869,48 @@ render_blend_file() {
             error "One or more GPU renders failed"
             exit 1
         fi
+
+        # Display render statistics summary
+        echo ""
+        echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+        echo -e "${GREEN}Render Statistics${NC}"
+        echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+        
+        local total_all_frames=0
+        local grand_total_time=0
+        
+        for gpu in "${gpu_indices[@]}"; do
+            local stats_dir
+            stats_dir=$(cat "/tmp/gpu_${gpu}_stats_dir_$$" 2>/dev/null)
+            if [[ -n "$stats_dir" ]]; then
+                local frame_count
+                frame_count=$(cat "$stats_dir/gpu_${gpu}_frame_count" 2>/dev/null || echo "0")
+                local total_time
+                total_time=$(cat "$stats_dir/gpu_${gpu}_total_time" 2>/dev/null || echo "0")
+                local avg_time
+                avg_time=$(get_average_frame_time "$stats_dir" "$gpu")
+                
+                printf "${YELLOW}GPU %s:${NC} %d frames | Total: %.2fs | Avg: %.2fs/frame\n" \
+                    "$gpu" "$frame_count" "$total_time" "$avg_time"
+                
+                total_all_frames=$((total_all_frames + frame_count))
+                grand_total_time=$(echo "scale=2; $grand_total_time + $total_time" | bc 2>/dev/null || echo "$grand_total_time")
+            fi
+        done
+        
+        echo -e "${BLUE}───────────────────────────────────────────────────────${NC}"
+        printf "${GREEN}Total:${NC} %d frames | Combined time: %.2fs\n" "$total_all_frames" "$grand_total_time"
+        echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+        echo ""
+        
+        # Cleanup temp files
+        for gpu in "${gpu_indices[@]}"; do
+            rm -f "/tmp/blender_render_${gpu}_$$.log" 2>/dev/null
+            rm -f "/tmp/gpu_${gpu}_stats_dir_$$" 2>/dev/null
+            rm -f "/tmp/gpu_${gpu}_id_$$" 2>/dev/null
+            rm -f "/tmp/gpu_${gpu}_start_$$" 2>/dev/null
+            rm -f "/tmp/gpu_${gpu}_end_$$" 2>/dev/null
+        done
 
         log "Blender execution completed across $gpu_count GPUs"
         return
